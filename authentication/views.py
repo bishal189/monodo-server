@@ -11,7 +11,8 @@ from .serializers import (
     UserRegistrationSerializer,
     UserLoginSerializer,
     UserProfileSerializer,
-    UserUpdateSerializer
+    UserUpdateSerializer,
+    AgentCreateSerializer
 )
 from .permissions import IsAdmin, IsAdminOrAgent
 from activity.utils import create_login_activity
@@ -221,7 +222,7 @@ def agent_dashboard_stats(request):
 @api_view(['GET'])
 @permission_classes([IsAdminOrAgent])
 def agent_user_list(request):
-    queryset = User.objects.filter(role='USER').order_by('-date_joined')
+    queryset = User.objects.filter(role='AGENT').order_by('-date_joined')
     search = request.query_params.get('search', None)
     if search:
         queryset = queryset.filter(
@@ -231,3 +232,29 @@ def agent_user_list(request):
         )
     serializer = UserProfileSerializer(queryset, many=True)
     return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class AgentCreateView(generics.CreateAPIView):
+    queryset = User.objects.all()
+    serializer_class = AgentCreateSerializer
+    permission_classes = [IsAdmin]
+    
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        if not serializer.is_valid():
+            errors = {}
+            for field, error_list in serializer.errors.items():
+                if isinstance(error_list, list):
+                    errors[field] = error_list[0] if error_list else 'Invalid value'
+                else:
+                    errors[field] = str(error_list)
+            
+            return Response({
+                'message': 'Validation failed',
+                'errors': errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+        agent = serializer.save(created_by=request.user)
+        return Response({
+            'message': 'Agent created successfully',
+            'user': UserProfileSerializer(agent).data
+        }, status=status.HTTP_201_CREATED)

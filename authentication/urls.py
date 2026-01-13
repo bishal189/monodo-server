@@ -17,7 +17,7 @@ urlpatterns = [
     path('admin/dashboard/stats/', views.admin_dashboard_stats, name='admin-dashboard-stats'),
     path('admin/users/<int:user_id>/activate/', views.admin_activate_user, name='admin-activate-user'),
     path('admin/users/<int:user_id>/deactivate/', views.admin_deactivate_user, name='admin-deactivate-user'),
-    
+    path('admin/agents/create/', views.AgentCreateView.as_view(), name='admin-create-agent'),
     
     path('agent/dashboard/stats/', views.agent_dashboard_stats, name='agent-dashboard-stats'),
     path('agent/users/', views.agent_user_list, name='agent-user-list'),
