@@ -4,7 +4,7 @@ from rest_framework.response import Response
 from django.db.models import Q
 from .models import Level
 from .serializers import LevelSerializer, LevelCreateSerializer, LevelUpdateSerializer
-from authentication.permissions import IsAdmin
+from authentication.permissions import IsAdminOrAgent
 
 
 class LevelListView(generics.ListCreateAPIView):
@@ -12,7 +12,7 @@ class LevelListView(generics.ListCreateAPIView):
     GET: List all levels
     POST: Create a new level
     """
-    permission_classes = [IsAdmin]
+    permission_classes = [IsAdminOrAgent]
     
     def get_queryset(self):
         queryset = Level.objects.all()
@@ -66,7 +66,7 @@ class LevelDetailView(generics.RetrieveUpdateDestroyAPIView):
     DELETE: Delete a specific level
     """
     queryset = Level.objects.all()
-    permission_classes = [IsAdmin]
+    permission_classes = [IsAdminOrAgent]
     lookup_field = 'id'
     
     def get_serializer_class(self):

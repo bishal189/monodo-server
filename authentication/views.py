@@ -7,6 +7,44 @@ from django.utils import timezone
 from django.db.models import Q
 from datetime import timedelta
 from .models import User
+
+
+def get_time_ago(dt):
+    """Calculate time ago string from datetime"""
+    if not dt:
+        return None
+    
+    now = timezone.now()
+    diff = now - dt
+    
+    if diff.days > 0:
+        if diff.days == 1:
+            return "1 day ago"
+        return f"{diff.days} days ago"
+    elif diff.seconds >= 3600:
+        hours = diff.seconds // 3600
+        if hours == 1:
+            return "1 hour ago"
+        return f"{hours} hours ago"
+    elif diff.seconds >= 60:
+        minutes = diff.seconds // 60
+        if minutes == 1:
+            return "1 min ago"
+        return f"{minutes} mins ago"
+    else:
+        return "Just now"
+
+
+def get_user_initials(username):
+    """Get initials from username (first letter of first two words)"""
+    if not username:
+        return ""
+    parts = username.split()
+    if len(parts) >= 2:
+        return (parts[0][0] + parts[1][0]).upper()
+    elif len(parts) == 1:
+        return parts[0][:2].upper()
+    return ""
 from .serializers import (
     UserRegistrationSerializer,
     UserLoginSerializer,
@@ -100,6 +138,20 @@ def check_auth_view(request):
     }, status=status.HTTP_200_OK)
 
 
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def check_user_role_view(request):
+    return Response({
+        'is_admin': request.user.is_admin,
+        'is_agent': request.user.is_agent,
+        'is_user': request.user.is_normal_user,
+        'role': request.user.role,
+        'user_id': request.user.id,
+        'username': request.user.username,
+        'email': request.user.email
+    }, status=status.HTTP_200_OK)
+
+
 class AdminUserListView(generics.ListAPIView):
     serializer_class = UserProfileSerializer
     permission_classes = [IsAdmin]
@@ -141,18 +193,38 @@ class AdminUserDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 @api_view(['GET'])
-@permission_classes([IsAdmin])
+@permission_classes([IsAdminOrAgent])
 def admin_dashboard_stats(request):
+    if request.user.is_admin:
+        user_queryset = User.objects.all()
+        agent_queryset = User.objects.filter(role='AGENT')
+    else:
+        user_queryset = User.objects.filter(created_by=request.user)
+        agent_queryset = User.objects.filter(role='AGENT', created_by=request.user)
+    
+    active_session = user_queryset.exclude(last_login__isnull=True).count()
+    
+    recent_users = user_queryset.exclude(
+        last_login__isnull=True
+    ).order_by('-last_login')[:5]
+    
+    top_users = []
+    for user in recent_users:
+        top_users.append({
+            'id': user.id,
+            'initials': get_user_initials(user.username),
+            'name': user.username,
+            'email': user.email,
+            'time_ago': get_time_ago(user.last_login),
+            'status': 'Active' if user.is_active else 'Inactive'
+        })
+    
     return Response({
-        'total_users': User.objects.count(),
-        'active_users': User.objects.filter(is_active=True).count(),
-        'inactive_users': User.objects.filter(is_active=False).count(),
-        'admin_users': User.objects.filter(role='ADMIN').count(),
-        'agent_users': User.objects.filter(role='AGENT').count(),
-        'normal_users': User.objects.filter(role='USER').count(),
-        'recent_registrations': User.objects.filter(
-            date_joined__gte=timezone.now() - timedelta(days=7)
-        ).count()
+        'total_users': user_queryset.count(),
+        'active_session': active_session,
+        'total_agent': agent_queryset.count(),
+        'suspended_users': user_queryset.filter(is_active=False).count(),
+        'top_recent_users': top_users
     }, status=status.HTTP_200_OK)
 
 
@@ -232,6 +304,108 @@ def agent_user_list(request):
         )
     serializer = UserProfileSerializer(queryset, many=True)
     return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAdminOrAgent])
+def agent_created_users_list(request):
+    if request.user.is_admin:
+        queryset = User.objects.filter(created_by__role='AGENT').order_by('-date_joined')
+    else:
+        queryset = User.objects.filter(created_by=request.user).order_by('-date_joined')
+    
+    search = request.query_params.get('search', None)
+    if search:
+        queryset = queryset.filter(
+            Q(email__icontains=search) |
+            Q(username__icontains=search) |
+            Q(phone_number__icontains=search)
+        )
+    
+    is_active = request.query_params.get('is_active', None)
+    if is_active is not None:
+        queryset = queryset.filter(is_active=is_active.lower() == 'true')
+    
+    role = request.query_params.get('role', None)
+    if role:
+        queryset = queryset.filter(role=role.upper())
+    
+    serializer = UserProfileSerializer(queryset, many=True)
+    return Response({
+        'users': serializer.data,
+        'count': queryset.count()
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAdminOrAgent])
+def agent_create_user(request):
+    serializer = UserRegistrationSerializer(data=request.data)
+    if not serializer.is_valid():
+        errors = {}
+        for field, error_list in serializer.errors.items():
+            if isinstance(error_list, list):
+                errors[field] = error_list[0] if error_list else 'Invalid value'
+            else:
+                errors[field] = str(error_list)
+        
+        return Response({
+            'message': 'Validation failed',
+            'errors': errors
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    user = serializer.save()
+    user.created_by = request.user
+    user.save()
+    
+    return Response({
+        'message': 'User created successfully',
+        'user': UserProfileSerializer(user).data
+    }, status=status.HTTP_201_CREATED)
+
+
+@api_view(['POST'])
+@permission_classes([IsAdminOrAgent])
+def agent_activate_user(request, user_id):
+    try:
+        user = User.objects.get(id=user_id)
+        
+        if not request.user.is_admin:
+            if user.created_by != request.user:
+                return Response({
+                    'error': 'You can only activate users created by you'
+                }, status=status.HTTP_403_FORBIDDEN)
+        
+        user.is_active = True
+        user.save()
+        return Response({
+            'message': 'User activated successfully',
+            'user': UserProfileSerializer(user).data
+        }, status=status.HTTP_200_OK)
+    except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+
+@api_view(['POST'])
+@permission_classes([IsAdminOrAgent])
+def agent_deactivate_user(request, user_id):
+    try:
+        user = User.objects.get(id=user_id)
+        
+        if not request.user.is_admin:
+            if user.created_by != request.user:
+                return Response({
+                    'error': 'You can only deactivate users created by you'
+                }, status=status.HTTP_403_FORBIDDEN)
+        
+        user.is_active = False
+        user.save()
+        return Response({
+            'message': 'User deactivated successfully',
+            'user': UserProfileSerializer(user).data
+        }, status=status.HTTP_200_OK)
+    except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
 
 
 class AgentCreateView(generics.CreateAPIView):
