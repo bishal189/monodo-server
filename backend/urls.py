@@ -9,6 +9,7 @@ urlpatterns = [
     path('api/activity/', include('activity.urls')),
     path('api/level/', include('level.urls')),
     path('api/product/', include('product.urls')),
+    path('api/transaction/', include('transaction.urls')),
 ]
 
 # Serve media files in development
