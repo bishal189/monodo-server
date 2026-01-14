@@ -4,7 +4,7 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenRefreshView
 from django.utils import timezone
-from django.db.models import Q
+from django.db.models import Q, Count
 from datetime import timedelta
 from .models import User
 
@@ -52,7 +52,7 @@ from .serializers import (
     UserUpdateSerializer,
     AgentCreateSerializer
 )
-from .permissions import IsAdmin, IsAdminOrAgent
+from .permissions import IsAdmin, IsAdminOrAgent, IsAgent
 from activity.utils import create_login_activity
 
 
@@ -308,6 +308,38 @@ def agent_user_list(request):
 
 @api_view(['GET'])
 @permission_classes([IsAdminOrAgent])
+def agent_my_created_users(request):
+    """
+    Get all users created by the currently logged-in user (agent or admin).
+    Accessible by both admins and agents.
+    """
+    queryset = User.objects.filter(created_by=request.user).order_by('-date_joined')
+    
+    search = request.query_params.get('search', None)
+    if search:
+        queryset = queryset.filter(
+            Q(email__icontains=search) |
+            Q(username__icontains=search) |
+            Q(phone_number__icontains=search)
+        )
+    
+    is_active = request.query_params.get('is_active', None)
+    if is_active is not None:
+        queryset = queryset.filter(is_active=is_active.lower() == 'true')
+    
+    role = request.query_params.get('role', None)
+    if role:
+        queryset = queryset.filter(role=role.upper())
+    
+    serializer = UserProfileSerializer(queryset, many=True)
+    return Response({
+        'users': serializer.data,
+        'count': queryset.count()
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAdminOrAgent])
 def agent_created_users_list(request):
     if request.user.is_admin:
         queryset = User.objects.filter(created_by__role='AGENT').order_by('-date_joined')
@@ -406,6 +438,109 @@ def agent_deactivate_user(request, user_id):
         }, status=status.HTTP_200_OK)
     except User.DoesNotExist:
         return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+
+@api_view(['GET'])
+@permission_classes([IsAdmin])
+def admin_created_agents_list(request):
+    """
+    Get all agents created by admins with total users count.
+    Only accessible by admins.
+    Returns: ID, Name, Email, Phone, Invitation Code, Total Users, Status, Created By, Created At
+    """
+    queryset = User.objects.filter(
+        role='AGENT', 
+        created_by__role='ADMIN'
+    ).annotate(
+        total_users=Count('created_users')
+    ).select_related('created_by').order_by('-date_joined')
+    
+    search = request.query_params.get('search', None)
+    if search:
+        queryset = queryset.filter(
+            Q(email__icontains=search) |
+            Q(username__icontains=search) |
+            Q(phone_number__icontains=search)
+        )
+    
+    is_active = request.query_params.get('is_active', None)
+    if is_active is not None:
+        queryset = queryset.filter(is_active=is_active.lower() == 'true')
+    
+    agents_data = []
+    for agent in queryset:
+        agents_data.append({
+            'id': agent.id,
+            'name': agent.username,
+            'email': agent.email,
+            'phone': agent.phone_number,
+            'invitation_code': agent.invitation_code,
+            'total_users': agent.total_users,
+            'status': 'Active' if agent.is_active else 'Inactive',
+            'created_by': agent.created_by.username if agent.created_by else None,
+            'created_by_email': agent.created_by.email if agent.created_by else None,
+            'created_at': agent.date_joined.isoformat() if agent.date_joined else None
+        })
+    
+    return Response({
+        'agents': agents_data,
+        'count': len(agents_data)
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAdmin])
+def admin_all_agent_created_users(request):
+    """
+    Get all users created by all agents.
+    Only accessible by admins.
+    Returns: ID, Username, Email, Phone Number, Invitation Code, Role, Created By, Status, Date Joined, Last Login
+    """
+    queryset = User.objects.filter(created_by__role='AGENT').select_related('created_by').order_by('-date_joined')
+    
+    search = request.query_params.get('search', None)
+    if search:
+        queryset = queryset.filter(
+            Q(email__icontains=search) |
+            Q(username__icontains=search) |
+            Q(phone_number__icontains=search) |
+            Q(invitation_code__icontains=search)
+        )
+    
+    is_active = request.query_params.get('is_active', None)
+    if is_active is not None:
+        queryset = queryset.filter(is_active=is_active.lower() == 'true')
+    
+    role = request.query_params.get('role', None)
+    if role:
+        queryset = queryset.filter(role=role.upper())
+    
+    # Filter by specific agent if agent_id is provided
+    agent_id = request.query_params.get('agent_id', None)
+    if agent_id:
+        queryset = queryset.filter(created_by_id=agent_id)
+    
+    users_data = []
+    for user in queryset:
+        users_data.append({
+            'id': user.id,
+            'username': user.username,
+            'email': user.email,
+            'phone_number': user.phone_number,
+            'invitation_code': user.invitation_code,
+            'role': user.role,
+            'created_by': user.created_by.username if user.created_by else None,
+            'created_by_id': user.created_by.id if user.created_by else None,
+            'created_by_email': user.created_by.email if user.created_by else None,
+            'status': 'Active' if user.is_active else 'Inactive',
+            'date_joined': user.date_joined.isoformat() if user.date_joined else None,
+            'last_login': user.last_login.isoformat() if user.last_login else None
+        })
+    
+    return Response({
+        'users': users_data,
+        'count': len(users_data)
+    }, status=status.HTTP_200_OK)
 
 
 class AgentCreateView(generics.CreateAPIView):

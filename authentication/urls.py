@@ -18,10 +18,13 @@ urlpatterns = [
     path('admin/dashboard/stats/', views.admin_dashboard_stats, name='admin-dashboard-stats'),
     path('admin/users/<int:user_id>/activate/', views.admin_activate_user, name='admin-activate-user'),
     path('admin/users/<int:user_id>/deactivate/', views.admin_deactivate_user, name='admin-deactivate-user'),
+    path('admin/agents/', views.admin_created_agents_list, name='admin-created-agents-list'),
     path('admin/agents/create/', views.AgentCreateView.as_view(), name='admin-create-agent'),
+    path('admin/agents/users/', views.admin_all_agent_created_users, name='admin-all-agent-created-users'),
     
     path('agent/dashboard/stats/', views.agent_dashboard_stats, name='agent-dashboard-stats'),
     path('agent/users/', views.agent_user_list, name='agent-user-list'),
+    path('agent/my-users/', views.agent_my_created_users, name='agent-my-created-users'),
     path('agent/created-users/', views.agent_created_users_list, name='agent-created-users-list'),
     path('agent/users/create/', views.agent_create_user, name='agent-create-user'),
     path('agent/users/<int:user_id>/activate/', views.agent_activate_user, name='agent-activate-user'),
