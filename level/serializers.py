@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import Level
+from authentication.models import User
 
 
 class LevelSerializer(serializers.ModelSerializer):
@@ -64,4 +65,29 @@ class LevelUpdateSerializer(LevelSerializer):
     min_orders = serializers.IntegerField(required=False)
     benefits = serializers.CharField(required=False, allow_blank=True)
     status = serializers.ChoiceField(choices=Level.STATUS_CHOICES, required=False)
+
+
+class AssignLevelSerializer(serializers.Serializer):
+    """Serializer for assigning a level to a user"""
+    user_id = serializers.IntegerField(required=True)
+    level_id = serializers.IntegerField(required=True, allow_null=True)
+    
+    def validate_user_id(self, value):
+        """Validate that the user exists"""
+        try:
+            user = User.objects.get(id=value)
+        except User.DoesNotExist:
+            raise serializers.ValidationError("User with this ID does not exist.")
+        return value
+    
+    def validate_level_id(self, value):
+        """Validate that the level exists if provided"""
+        if value is not None:
+            try:
+                level = Level.objects.get(id=value)
+                if level.status != 'ACTIVE':
+                    raise serializers.ValidationError("Cannot assign an inactive level.")
+            except Level.DoesNotExist:
+                raise serializers.ValidationError("Level with this ID does not exist.")
+        return value
 

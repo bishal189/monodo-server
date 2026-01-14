@@ -312,8 +312,9 @@ def agent_my_created_users(request):
     """
     Get all users created by the currently logged-in user (agent or admin).
     Accessible by both admins and agents.
+    Returns users with level information if available.
     """
-    queryset = User.objects.filter(created_by=request.user).order_by('-date_joined')
+    queryset = User.objects.filter(created_by=request.user).select_related('level').order_by('-date_joined')
     
     search = request.query_params.get('search', None)
     if search:
@@ -494,9 +495,9 @@ def admin_all_agent_created_users(request):
     """
     Get all users created by all agents.
     Only accessible by admins.
-    Returns: ID, Username, Email, Phone Number, Invitation Code, Role, Created By, Status, Date Joined, Last Login
+    Returns: ID, Username, Email, Phone Number, Invitation Code, Role, Level, Created By, Status, Date Joined, Last Login
     """
-    queryset = User.objects.filter(created_by__role='AGENT').select_related('created_by').order_by('-date_joined')
+    queryset = User.objects.filter(created_by__role='AGENT').select_related('created_by', 'level').order_by('-date_joined')
     
     search = request.query_params.get('search', None)
     if search:
@@ -522,6 +523,12 @@ def admin_all_agent_created_users(request):
     
     users_data = []
     for user in queryset:
+        # Get level information if available
+        level_data = None
+        if user.level:
+            from level.serializers import LevelSerializer
+            level_data = LevelSerializer(user.level).data
+        
         users_data.append({
             'id': user.id,
             'username': user.username,
@@ -529,6 +536,7 @@ def admin_all_agent_created_users(request):
             'phone_number': user.phone_number,
             'invitation_code': user.invitation_code,
             'role': user.role,
+            'level': level_data,
             'created_by': user.created_by.username if user.created_by else None,
             'created_by_id': user.created_by.id if user.created_by else None,
             'created_by_email': user.created_by.email if user.created_by else None,

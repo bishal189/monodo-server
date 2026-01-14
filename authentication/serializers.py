@@ -136,6 +136,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
     role = serializers.CharField(read_only=True)
     created_by_email = serializers.EmailField(source='created_by.email', read_only=True)
     created_by_username = serializers.CharField(source='created_by.username', read_only=True)
+    level = serializers.SerializerMethodField()
     
     class Meta:
         model = User
@@ -146,6 +147,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'phone_number',
             'invitation_code',
             'role',
+            'level',
             'created_by',
             'created_by_email',
             'created_by_username',
@@ -154,6 +156,13 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'is_active'
         ]
         read_only_fields = ['id', 'date_joined', 'last_login', 'role', 'created_by']
+    
+    def get_level(self, obj):
+        """Return level information if user has a level assigned"""
+        if obj.level:
+            from level.serializers import LevelSerializer
+            return LevelSerializer(obj.level).data
+        return None
 
 
 class UserUpdateSerializer(serializers.ModelSerializer):
