@@ -52,3 +52,54 @@ class TransactionUpdateSerializer(TransactionSerializer):
     remark = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     status = serializers.ChoiceField(choices=Transaction.STATUS_CHOICES, required=False)
 
+
+class DepositSerializer(serializers.Serializer):
+    """Serializer for deposit transactions"""
+    amount = serializers.DecimalField(max_digits=10, decimal_places=2, required=True)
+    remark = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    
+    def validate_amount(self, value):
+        """Ensure amount is positive"""
+        if value <= 0:
+            raise serializers.ValidationError("Amount must be greater than zero.")
+        return value
+
+
+class WithdrawSerializer(serializers.Serializer):
+    """Serializer for withdrawal transactions"""
+    amount = serializers.DecimalField(max_digits=10, decimal_places=2, required=True)
+    withdraw_password = serializers.CharField(required=True, write_only=True)
+    remark = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    
+    def validate_amount(self, value):
+        """Ensure amount is positive"""
+        if value <= 0:
+            raise serializers.ValidationError("Amount must be greater than zero.")
+        return value
+    
+    def validate(self, attrs):
+        """Validate withdraw password and sufficient balance"""
+        user = self.context['user']
+        amount = attrs.get('amount')
+        withdraw_password = attrs.get('withdraw_password')
+        
+        # Check if user has withdraw password set
+        if not user.withdraw_password:
+            raise serializers.ValidationError({
+                'withdraw_password': 'Withdraw password is not set. Please set it first.'
+            })
+        
+        # Verify withdraw password
+        if user.withdraw_password != withdraw_password:
+            raise serializers.ValidationError({
+                'withdraw_password': 'Invalid withdraw password.'
+            })
+        
+        # Check if user has sufficient balance
+        if user.balance < amount:
+            raise serializers.ValidationError({
+                'amount': f'Insufficient balance. Available balance: {user.balance}'
+            })
+        
+        return attrs
+

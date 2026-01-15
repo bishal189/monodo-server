@@ -50,7 +50,8 @@ from .serializers import (
     UserLoginSerializer,
     UserProfileSerializer,
     UserUpdateSerializer,
-    AgentCreateSerializer
+    AgentCreateSerializer,
+    TrainingAccountCreateSerializer
 )
 from .permissions import IsAdmin, IsAdminOrAgent, IsAgent
 from activity.utils import create_login_activity
@@ -72,6 +73,7 @@ class UserRegistrationView(generics.CreateAPIView):
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         if not serializer.is_valid():
+            print(serializer.errors)
             return Response({
                 'errors': serializer.errors,
                 'message': 'Validation failed'
@@ -135,6 +137,28 @@ def check_auth_view(request):
     return Response({
         'authenticated': True,
         'user': UserProfileSerializer(request.user).data
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def get_invitation_code(request):
+    """
+    Get the invitation code and level for the currently logged-in user.
+    """
+    user = request.user
+    
+    # Get level information if available
+    level_data = None
+    if user.level:
+        from level.serializers import LevelSerializer
+        level_data = LevelSerializer(user.level).data
+    
+    return Response({
+        'invitation_code': user.invitation_code,
+        'username': user.username,
+        'email': user.email,
+        'level': level_data
     }, status=status.HTTP_200_OK)
 
 
@@ -311,10 +335,11 @@ def agent_user_list(request):
 def agent_my_created_users(request):
     """
     Get all users created by the currently logged-in user (agent or admin).
+    Includes both original accounts and training accounts created by the agent.
+    Returns structured data showing relationship between original and training accounts.
     Accessible by both admins and agents.
-    Returns users with level information if available.
     """
-    queryset = User.objects.filter(created_by=request.user).select_related('level').order_by('-date_joined')
+    queryset = User.objects.filter(created_by=request.user).select_related('level', 'original_account').prefetch_related('training_accounts').order_by('-date_joined')
     
     search = request.query_params.get('search', None)
     if search:
@@ -332,10 +357,54 @@ def agent_my_created_users(request):
     if role:
         queryset = queryset.filter(role=role.upper())
     
-    serializer = UserProfileSerializer(queryset, many=True)
+    is_training_account = request.query_params.get('is_training_account', None)
+    if is_training_account is not None:
+        queryset = queryset.filter(is_training_account=is_training_account.lower() == 'true')
+    
+    all_users = queryset
+    original_accounts = all_users.filter(is_training_account=False)
+    training_accounts = all_users.filter(is_training_account=True)
+    
+    original_accounts_serializer = UserProfileSerializer(original_accounts, many=True)
+    training_accounts_serializer = UserProfileSerializer(training_accounts, many=True)
+    
+    structured_data = []
+    original_accounts_dict = {}
+    
+    for original_account_data in original_accounts_serializer.data:
+        original_account_id = original_account_data['id']
+        original_accounts_dict[original_account_id] = {
+            **original_account_data,
+            'training_accounts': []
+        }
+    
+    for training_account_data in training_accounts_serializer.data:
+        original_account_id = training_account_data.get('original_account_id')
+        if original_account_id and original_account_id in original_accounts_dict:
+            original_accounts_dict[original_account_id]['training_accounts'].append(training_account_data)
+        else:
+            structured_data.append({
+                **training_account_data,
+                'training_accounts': []
+            })
+    
+    for account_data in original_accounts_dict.values():
+        structured_data.append(account_data)
+    
+    structured_data.sort(key=lambda x: x['date_joined'], reverse=True)
+    
+    original_accounts_count = original_accounts.count()
+    training_accounts_count = training_accounts.count()
+    
     return Response({
-        'users': serializer.data,
-        'count': queryset.count()
+        'users': structured_data,
+        'flat_list': original_accounts_serializer.data + training_accounts_serializer.data,
+        'count': all_users.count(),
+        'summary': {
+            'original_accounts': original_accounts_count,
+            'training_accounts': training_accounts_count,
+            'total': all_users.count()
+        }
     }, status=status.HTTP_200_OK)
 
 
@@ -575,3 +644,81 @@ class AgentCreateView(generics.CreateAPIView):
             'message': 'Agent created successfully',
             'user': UserProfileSerializer(agent).data
         }, status=status.HTTP_201_CREATED)
+
+
+@api_view(['POST'])
+@permission_classes([IsAdminOrAgent])
+def create_training_account(request):
+    serializer = TrainingAccountCreateSerializer(
+        data=request.data,
+        context={'request': request}
+    )
+    
+    if not serializer.is_valid():
+        errors = {}
+        for field, error_list in serializer.errors.items():
+            if isinstance(error_list, list):
+                errors[field] = error_list[0] if error_list else 'Invalid value'
+            else:
+                errors[field] = str(error_list)
+        
+        return Response({
+            'message': 'Validation failed',
+            'errors': errors
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    training_account = serializer.save()
+    
+    return Response({
+        'message': 'Training account created successfully',
+        'training_account': UserProfileSerializer(training_account).data,
+        'original_account': UserProfileSerializer(training_account.original_account).data
+    }, status=status.HTTP_201_CREATED)
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def list_training_accounts(request, original_account_id):
+    try:
+        original_account = User.objects.get(id=original_account_id)
+    except User.DoesNotExist:
+        return Response({
+            'error': 'Original account not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    
+    if not request.user.is_admin and not request.user.is_agent:
+        if original_account.id != request.user.id:
+            return Response({
+                'error': 'You do not have permission to view this information'
+            }, status=status.HTTP_403_FORBIDDEN)
+    
+    training_accounts = original_account.training_accounts.filter(is_active=True).order_by('-date_joined')
+    
+    serializer = UserProfileSerializer(training_accounts, many=True)
+    
+    return Response({
+        'original_account': UserProfileSerializer(original_account).data,
+        'training_accounts': serializer.data,
+        'count': training_accounts.count()
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def my_training_accounts(request):
+    user = request.user
+    
+    if user.is_training_account and user.original_account:
+        original_account = user.original_account
+    else:
+        original_account = user
+    
+    training_accounts = original_account.training_accounts.filter(is_active=True).order_by('-date_joined')
+    
+    serializer = UserProfileSerializer(training_accounts, many=True)
+    
+    return Response({
+        'original_account': UserProfileSerializer(original_account).data,
+        'training_accounts': serializer.data,
+        'count': training_accounts.count()
+    }, status=status.HTTP_200_OK)

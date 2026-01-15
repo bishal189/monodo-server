@@ -11,6 +11,7 @@ urlpatterns = [
     path('profile/', views.UserProfileView.as_view(), name='profile'),
     path('check-auth/', views.check_auth_view, name='check-auth'),
     path('check-role/', views.check_user_role_view, name='check-role'),
+    path('invite/', views.get_invitation_code, name='get-invitation-code'),
 
     path('admin/users/', views.AdminUserListView.as_view(), name='admin-users-list'),
     path('admin/users/<int:id>/', views.AdminUserDetailView.as_view(), name='admin-user-detail'),
@@ -29,4 +30,8 @@ urlpatterns = [
     path('agent/users/create/', views.agent_create_user, name='agent-create-user'),
     path('agent/users/<int:user_id>/activate/', views.agent_activate_user, name='agent-activate-user'),
     path('agent/users/<int:user_id>/deactivate/', views.agent_deactivate_user, name='agent-deactivate-user'),
+    
+    # Training Account endpoints
+    path('agent/training-accounts/create/', views.create_training_account, name='create-training-account'),
+    path('my-training-accounts/', views.my_training_accounts, name='my-training-accounts'),
 ]

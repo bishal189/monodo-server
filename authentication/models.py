@@ -59,6 +59,25 @@ class User(AbstractBaseUser, PermissionsMixin):
     role = models.CharField(max_length=10, choices=ROLE_CHOICES, default='USER', db_index=True)
     created_by = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True, related_name='created_users')
     level = models.ForeignKey('level.Level', on_delete=models.SET_NULL, null=True, blank=True, related_name='users', db_index=True)
+    original_account = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='training_accounts',
+        help_text="Link to original account if this is a training account"
+    )
+    is_training_account = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="True if this is a training account created by an agent"
+    )
+    balance = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0.00,
+        help_text="User account balance"
+    )
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     is_superuser = models.BooleanField(default=False)
@@ -89,6 +108,14 @@ class User(AbstractBaseUser, PermissionsMixin):
     @property
     def is_normal_user(self):
         return self.role == 'USER'
+    
+    def get_original_account(self):
+        return self.original_account if self.is_training_account else None
+    
+    def get_training_accounts(self):
+        if self.is_training_account:
+            return User.objects.none()
+        return self.training_accounts.filter(is_active=True)
     
     def has_perm(self, perm, obj=None):
         return self.is_superuser
