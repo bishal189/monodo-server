@@ -45,6 +45,55 @@ def get_user_initials(username):
     elif len(parts) == 1:
         return parts[0][:2].upper()
     return ""
+
+
+def format_user_table_data(users_queryset):
+    """Helper function to format users in table-friendly format"""
+    table_data = []
+    for user in users_queryset:
+        level_name = None
+        level_id = None
+        if user.level:
+            level_name = user.level.level_name
+            level_id = user.level.id
+        
+        account_type = 'Training' if user.is_training_account else 'Original'
+        
+        original_account_info = None
+        if user.is_training_account and user.original_account:
+            original_account_info = {
+                'id': user.original_account.id,
+                'username': user.original_account.username,
+                'email': user.original_account.email
+            }
+        
+        table_data.append({
+            'id': user.id,
+            'account_type': account_type,
+            'username': user.username,
+            'email': user.email,
+            'phone_number': user.phone_number,
+            'invitation_code': user.invitation_code,
+            'original_account': original_account_info,
+            'balance': float(user.balance),
+            'role': user.role,
+            'level': {
+                'id': level_id,
+                'name': level_name
+            } if level_name else None,
+            'created_by': {
+                'id': user.created_by.id if user.created_by else None,
+                'username': user.created_by.username if user.created_by else None,
+                'email': user.created_by.email if user.created_by else None
+            },
+            'status': 'Active' if user.is_active else 'Inactive',
+            'date_joined': user.date_joined.isoformat() if user.date_joined else None,
+            'last_login': user.last_login.isoformat() if user.last_login else None,
+            'is_training_account': user.is_training_account
+        })
+    return table_data
+
+
 from .serializers import (
     UserRegistrationSerializer,
     UserLoginSerializer,
@@ -352,7 +401,7 @@ def agent_my_created_users(request):
     Returns structured data showing relationship between original and training accounts.
     Accessible by both admins and agents.
     """
-    queryset = User.objects.filter(created_by=request.user).select_related('level', 'original_account').prefetch_related('training_accounts').order_by('-date_joined')
+    queryset = User.objects.filter(created_by=request.user).select_related('level', 'original_account', 'created_by').prefetch_related('training_accounts').order_by('-date_joined')
     
     search = request.query_params.get('search', None)
     if search:
@@ -377,6 +426,8 @@ def agent_my_created_users(request):
     all_users = queryset
     original_accounts = all_users.filter(is_training_account=False)
     training_accounts = all_users.filter(is_training_account=True)
+    
+    table_data = format_user_table_data(all_users)
     
     original_accounts_serializer = UserProfileSerializer(original_accounts, many=True)
     training_accounts_serializer = UserProfileSerializer(training_accounts, many=True)
@@ -410,6 +461,7 @@ def agent_my_created_users(request):
     training_accounts_count = training_accounts.count()
     
     return Response({
+        'table_data': table_data,
         'users': structured_data,
         'flat_list': original_accounts_serializer.data + training_accounts_serializer.data,
         'count': all_users.count(),
@@ -619,6 +671,8 @@ def admin_all_agent_created_users(request):
     original_accounts = all_users.filter(is_training_account=False)
     training_accounts = all_users.filter(is_training_account=True)
     
+    table_data = format_user_table_data(all_users)
+    
     original_accounts_serializer = UserProfileSerializer(original_accounts, many=True)
     training_accounts_serializer = UserProfileSerializer(training_accounts, many=True)
     
@@ -651,6 +705,7 @@ def admin_all_agent_created_users(request):
     training_accounts_count = training_accounts.count()
     
     return Response({
+        'table_data': table_data,
         'users': structured_data,
         'flat_list': original_accounts_serializer.data + training_accounts_serializer.data,
         'count': all_users.count(),
@@ -716,10 +771,18 @@ def create_training_account(request):
             else:
                 errors[field] = str(error_list)
         
+        error_messages = []
+        for field, message in errors.items():
+            if isinstance(message, list):
+                error_messages.extend([f"{field}: {msg}" for msg in message])
+            else:
+                error_messages.append(f"{field}: {message}")
+        
         return Response({
             'success': False,
-            'message': 'Validation failed',
-            'errors': errors
+            'message': 'Validation failed. Please check the errors below.',
+            'errors': errors,
+            'error_summary': error_messages
         }, status=status.HTTP_400_BAD_REQUEST)
     
     training_account = serializer.save()

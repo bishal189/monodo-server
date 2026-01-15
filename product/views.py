@@ -436,36 +436,34 @@ def submit_product_review(request):
             )
             
             original_account = None
-            split_amount = Decimal('0.00')
-            training_account_amount = commission_amount
+            original_account_bonus = Decimal('0.00')
             
             if user.is_training_account and user.original_account:
                 original_account = user.original_account
-                split_amount = (commission_amount * Decimal('30')) / Decimal('100')
-                training_account_amount = commission_amount - split_amount
+                original_account_bonus = (commission_amount * Decimal('30')) / Decimal('100')
                 
                 Transaction.objects.create(
                     member_account=original_account,
                     type='COMMISSION',
-                    amount=split_amount,
-                    remark=f'30% commission share from training account: {user.username} - Product: {product.title}',
+                    amount=original_account_bonus,
+                    remark=f'30% commission bonus from training account: {user.username} - Product: {product.title}',
                     remark_type='COMMISSION',
                     status='COMPLETED'
                 )
                 
-                original_account.balance += split_amount
+                original_account.balance += original_account_bonus
                 original_account.save(update_fields=['balance'])
             
             commission_transaction = Transaction.objects.create(
                 member_account=user,
                 type='COMMISSION',
-                amount=training_account_amount,
+                amount=commission_amount,
                 remark=f'Commission for reviewing product: {product.title}',
                 remark_type='COMMISSION',
                 status='COMPLETED'
             )
             
-            user.balance += training_account_amount
+            user.balance += commission_amount
             user.save(update_fields=['balance'])
         
         from transaction.serializers import TransactionSerializer
@@ -484,10 +482,10 @@ def submit_product_review(request):
         
         if user.is_training_account and original_account:
             response_data['income_split'] = {
-                'training_account_received': float(training_account_amount),
-                'original_account_received': float(split_amount),
+                'training_account_received': float(commission_amount),
+                'original_account_bonus': float(original_account_bonus),
                 'original_account_balance': float(original_account.balance),
-                'split_percentage': 30
+                'bonus_percentage': 30
             }
         
         return Response(response_data, status=status.HTTP_201_CREATED)
