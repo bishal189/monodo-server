@@ -73,14 +73,27 @@ class UserRegistrationView(generics.CreateAPIView):
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         if not serializer.is_valid():
-            print(serializer.errors)
+            errors = {}
+            for field, error_list in serializer.errors.items():
+                if isinstance(error_list, list):
+                    if len(error_list) == 1:
+                        errors[field] = error_list[0]
+                    else:
+                        errors[field] = error_list
+                elif isinstance(error_list, dict):
+                    errors[field] = error_list
+                else:
+                    errors[field] = str(error_list)
+            
             return Response({
-                'errors': serializer.errors,
-                'message': 'Validation failed'
+                'success': False,
+                'message': 'Validation failed',
+                'errors': errors
             }, status=status.HTTP_400_BAD_REQUEST)
         user = serializer.save()
         tokens = get_tokens_for_user(user)
         return Response({
+            'success': True,
             'message': 'Account created successfully',
             'user': UserProfileSerializer(user).data,
             'tokens': tokens
@@ -447,11 +460,17 @@ def agent_create_user(request):
         errors = {}
         for field, error_list in serializer.errors.items():
             if isinstance(error_list, list):
-                errors[field] = error_list[0] if error_list else 'Invalid value'
+                if len(error_list) == 1:
+                    errors[field] = error_list[0]
+                else:
+                    errors[field] = error_list
+            elif isinstance(error_list, dict):
+                errors[field] = error_list
             else:
                 errors[field] = str(error_list)
         
         return Response({
+            'success': False,
             'message': 'Validation failed',
             'errors': errors
         }, status=status.HTTP_400_BAD_REQUEST)
@@ -461,6 +480,7 @@ def agent_create_user(request):
     user.save()
     
     return Response({
+        'success': True,
         'message': 'User created successfully',
         'user': UserProfileSerializer(user).data
     }, status=status.HTTP_201_CREATED)
@@ -563,10 +583,11 @@ def admin_created_agents_list(request):
 def admin_all_agent_created_users(request):
     """
     Get all users created by all agents.
+    Includes both original accounts and training accounts created by agents.
+    Returns structured data showing relationship between original and training accounts.
     Only accessible by admins.
-    Returns: ID, Username, Email, Phone Number, Invitation Code, Role, Level, Created By, Status, Date Joined, Last Login
     """
-    queryset = User.objects.filter(created_by__role='AGENT').select_related('created_by', 'level').order_by('-date_joined')
+    queryset = User.objects.filter(created_by__role='AGENT').select_related('created_by', 'level', 'original_account').prefetch_related('training_accounts').order_by('-date_joined')
     
     search = request.query_params.get('search', None)
     if search:
@@ -585,38 +606,59 @@ def admin_all_agent_created_users(request):
     if role:
         queryset = queryset.filter(role=role.upper())
     
+    is_training_account = request.query_params.get('is_training_account', None)
+    if is_training_account is not None:
+        queryset = queryset.filter(is_training_account=is_training_account.lower() == 'true')
+    
     # Filter by specific agent if agent_id is provided
     agent_id = request.query_params.get('agent_id', None)
     if agent_id:
         queryset = queryset.filter(created_by_id=agent_id)
     
-    users_data = []
-    for user in queryset:
-        # Get level information if available
-        level_data = None
-        if user.level:
-            from level.serializers import LevelSerializer
-            level_data = LevelSerializer(user.level).data
-        
-        users_data.append({
-            'id': user.id,
-            'username': user.username,
-            'email': user.email,
-            'phone_number': user.phone_number,
-            'invitation_code': user.invitation_code,
-            'role': user.role,
-            'level': level_data,
-            'created_by': user.created_by.username if user.created_by else None,
-            'created_by_id': user.created_by.id if user.created_by else None,
-            'created_by_email': user.created_by.email if user.created_by else None,
-            'status': 'Active' if user.is_active else 'Inactive',
-            'date_joined': user.date_joined.isoformat() if user.date_joined else None,
-            'last_login': user.last_login.isoformat() if user.last_login else None
-        })
+    all_users = queryset
+    original_accounts = all_users.filter(is_training_account=False)
+    training_accounts = all_users.filter(is_training_account=True)
+    
+    original_accounts_serializer = UserProfileSerializer(original_accounts, many=True)
+    training_accounts_serializer = UserProfileSerializer(training_accounts, many=True)
+    
+    structured_data = []
+    original_accounts_dict = {}
+    
+    for original_account_data in original_accounts_serializer.data:
+        original_account_id = original_account_data['id']
+        original_accounts_dict[original_account_id] = {
+            **original_account_data,
+            'training_accounts': []
+        }
+    
+    for training_account_data in training_accounts_serializer.data:
+        original_account_id = training_account_data.get('original_account_id')
+        if original_account_id and original_account_id in original_accounts_dict:
+            original_accounts_dict[original_account_id]['training_accounts'].append(training_account_data)
+        else:
+            structured_data.append({
+                **training_account_data,
+                'training_accounts': []
+            })
+    
+    for account_data in original_accounts_dict.values():
+        structured_data.append(account_data)
+    
+    structured_data.sort(key=lambda x: x['date_joined'], reverse=True)
+    
+    original_accounts_count = original_accounts.count()
+    training_accounts_count = training_accounts.count()
     
     return Response({
-        'users': users_data,
-        'count': len(users_data)
+        'users': structured_data,
+        'flat_list': original_accounts_serializer.data + training_accounts_serializer.data,
+        'count': all_users.count(),
+        'summary': {
+            'original_accounts': original_accounts_count,
+            'training_accounts': training_accounts_count,
+            'total': all_users.count()
+        }
     }, status=status.HTTP_200_OK)
 
 
@@ -631,16 +673,23 @@ class AgentCreateView(generics.CreateAPIView):
             errors = {}
             for field, error_list in serializer.errors.items():
                 if isinstance(error_list, list):
-                    errors[field] = error_list[0] if error_list else 'Invalid value'
+                    if len(error_list) == 1:
+                        errors[field] = error_list[0]
+                    else:
+                        errors[field] = error_list
+                elif isinstance(error_list, dict):
+                    errors[field] = error_list
                 else:
                     errors[field] = str(error_list)
             
             return Response({
+                'success': False,
                 'message': 'Validation failed',
                 'errors': errors
             }, status=status.HTTP_400_BAD_REQUEST)
         agent = serializer.save(created_by=request.user)
         return Response({
+            'success': True,
             'message': 'Agent created successfully',
             'user': UserProfileSerializer(agent).data
         }, status=status.HTTP_201_CREATED)
@@ -658,11 +707,17 @@ def create_training_account(request):
         errors = {}
         for field, error_list in serializer.errors.items():
             if isinstance(error_list, list):
-                errors[field] = error_list[0] if error_list else 'Invalid value'
+                if len(error_list) == 1:
+                    errors[field] = error_list[0]
+                else:
+                    errors[field] = error_list
+            elif isinstance(error_list, dict):
+                errors[field] = error_list
             else:
                 errors[field] = str(error_list)
         
         return Response({
+            'success': False,
             'message': 'Validation failed',
             'errors': errors
         }, status=status.HTTP_400_BAD_REQUEST)
@@ -670,6 +725,7 @@ def create_training_account(request):
     training_account = serializer.save()
     
     return Response({
+        'success': True,
         'message': 'Training account created successfully',
         'training_account': UserProfileSerializer(training_account).data,
         'original_account': UserProfileSerializer(training_account.original_account).data
