@@ -159,7 +159,6 @@ def login_view(request):
         user.save(update_fields=['last_login'])
         create_login_activity(user, request)
         tokens = get_tokens_for_user(user)
-        # Include user role and basic info in response for frontend routing
         return Response({
             **tokens,
             'user': {
@@ -172,7 +171,37 @@ def login_view(request):
                 'is_normal_user': user.is_normal_user
             }
         }, status=status.HTTP_200_OK)
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    errors = {}
+    error_message = None
+    
+    if isinstance(serializer.errors, dict):
+        if 'non_field_errors' in serializer.errors:
+            error_list = serializer.errors['non_field_errors']
+            if isinstance(error_list, list) and error_list:
+                error_message = error_list[0]
+            else:
+                error_message = str(error_list)
+        
+        if not error_message:
+            for field, error_list in serializer.errors.items():
+                if isinstance(error_list, list) and error_list:
+                    error_message = error_list[0]
+                    break
+                else:
+                    error_message = str(error_list)
+                    break
+        
+        errors = serializer.errors
+    
+    if not error_message:
+        error_message = 'Invalid email or password.'
+    
+    return Response({
+        'error': error_message,
+        'errors': errors,
+        'message': error_message
+    }, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(['POST'])

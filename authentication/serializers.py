@@ -135,15 +135,21 @@ class UserLoginSerializer(serializers.Serializer):
             User = get_user_model()
             try:
                 user = User.objects.get(email=email)
-                if user.check_password(password) and user.is_active:
+                if not user.is_active:
+                    raise serializers.ValidationError({
+                        'non_field_errors': ['Your account has been disabled. Please contact support.']
+                    })
+                if user.check_password(password):
                     attrs['user'] = user
                     return attrs
-                elif not user.is_active:
-                    raise serializers.ValidationError('User account is disabled.')
                 else:
-                    raise serializers.ValidationError('Invalid email or password.')
+                    raise serializers.ValidationError({
+                        'non_field_errors': ['Invalid email or password.']
+                    })
             except User.DoesNotExist:
-                raise serializers.ValidationError('Invalid email or password.')
+                raise serializers.ValidationError({
+                    'non_field_errors': ['Invalid email or password.']
+                })
         
         raise serializers.ValidationError('Email and password are required.')
 
