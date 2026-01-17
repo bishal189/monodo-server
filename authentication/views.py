@@ -159,7 +159,19 @@ def login_view(request):
         user.save(update_fields=['last_login'])
         create_login_activity(user, request)
         tokens = get_tokens_for_user(user)
-        return Response(tokens, status=status.HTTP_200_OK)
+        # Include user role and basic info in response for frontend routing
+        return Response({
+            **tokens,
+            'user': {
+                'id': user.id,
+                'email': user.email,
+                'username': user.username,
+                'role': user.role,
+                'is_admin': user.is_admin,
+                'is_agent': user.is_agent,
+                'is_normal_user': user.is_normal_user
+            }
+        }, status=status.HTTP_200_OK)
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 

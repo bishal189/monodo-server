@@ -13,7 +13,7 @@ from .serializers import (
     ProductReviewSerializer,
     SubmitProductReviewSerializer
 )
-from authentication.permissions import IsAdminOrAgent
+from authentication.permissions import IsAdminOrAgent, IsNormalUser
 from authentication.models import User
 from level.models import Level
 from transaction.models import Transaction
@@ -257,7 +257,7 @@ def get_products_by_level(request, level_id):
 
 
 @api_view(['GET'])
-@permission_classes([permissions.IsAuthenticated])
+@permission_classes([IsNormalUser])
 def product_dashboard(request):
     """
     Get product dashboard overview with stats and products based on user's level.
@@ -320,7 +320,7 @@ def product_dashboard(request):
 
 
 @api_view(['GET'])
-@permission_classes([permissions.IsAuthenticated])
+@permission_classes([IsNormalUser])
 def get_products_by_review_status(request):
     """
     Get products filtered by review status (PENDING or COMPLETED) for the logged-in user.
@@ -393,7 +393,7 @@ def get_products_by_review_status(request):
 
 
 @api_view(['POST'])
-@permission_classes([permissions.IsAuthenticated])
+@permission_classes([IsNormalUser])
 def submit_product_review(request):
     serializer = SubmitProductReviewSerializer(data=request.data, context={'user': request.user})
     

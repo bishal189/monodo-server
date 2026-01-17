@@ -11,7 +11,7 @@ from .serializers import (
     DepositSerializer,
     WithdrawSerializer
 )
-from authentication.permissions import IsAdmin
+from authentication.permissions import IsAdmin, IsNormalUser
 
 
 class TransactionListView(generics.ListCreateAPIView):
@@ -141,7 +141,7 @@ class TransactionDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 @api_view(['GET', 'POST'])
-@permission_classes([permissions.IsAuthenticated])
+@permission_classes([IsNormalUser])
 def my_deposit(request):
     """
     GET: Get all deposit transactions for the currently logged-in user
@@ -242,7 +242,7 @@ def my_deposit(request):
 
 
 @api_view(['POST'])
-@permission_classes([permissions.IsAuthenticated])
+@permission_classes([IsNormalUser])
 def withdraw_amount(request):
     """
     Withdraw amount from the currently logged-in user's account.
@@ -384,7 +384,7 @@ def reject_transaction(request, transaction_id):
 
 
 @api_view(['GET'])
-@permission_classes([permissions.IsAuthenticated])
+@permission_classes([IsNormalUser])
 def get_my_transactions(request):
     """
     Get all transactions for the currently logged-in user.
@@ -424,7 +424,7 @@ def get_my_transactions(request):
 
 
 @api_view(['GET'])
-@permission_classes([permissions.IsAuthenticated])
+@permission_classes([IsNormalUser])
 def get_my_balance(request):
     """
     Get the current balance for the currently logged-in user.
