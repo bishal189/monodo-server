@@ -83,23 +83,77 @@ class WithdrawSerializer(serializers.Serializer):
         amount = attrs.get('amount')
         withdraw_password = attrs.get('withdraw_password')
         
-        # Check if user has withdraw password set
         if not user.withdraw_password:
             raise serializers.ValidationError({
                 'withdraw_password': 'Withdraw password is not set. Please set it first.'
             })
         
-        # Verify withdraw password
         if user.withdraw_password != withdraw_password:
             raise serializers.ValidationError({
                 'withdraw_password': 'Invalid withdraw password.'
             })
         
-        # Check if user has sufficient balance
         if user.balance < amount:
             raise serializers.ValidationError({
                 'amount': f'Insufficient balance. Available balance: {user.balance}'
             })
+        
+        return attrs
+
+
+class BalanceAdjustmentSerializer(serializers.Serializer):
+    """Serializer for admin/agent to add/subtract balance (debit/credit)"""
+    BALANCE_TYPE_CHOICES = [
+        ('CREDIT', 'Credit'),
+        ('DEBIT', 'Debit'),
+    ]
+    
+    member_account = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.all(),
+        required=True,
+        help_text="User account to adjust balance for"
+    )
+    type = serializers.ChoiceField(
+        choices=BALANCE_TYPE_CHOICES,
+        required=True,
+        help_text="CREDIT to add balance, DEBIT to subtract balance"
+    )
+    amount = serializers.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        required=True,
+        help_text="Amount to adjust"
+    )
+    remark_type = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        max_length=20,
+        help_text="Type of remark (any text allowed)"
+    )
+    remark = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        help_text="Additional remarks or description"
+    )
+    
+    def validate_amount(self, value):
+        """Ensure amount is positive"""
+        if value <= 0:
+            raise serializers.ValidationError("Amount must be greater than zero.")
+        return value
+    
+    def validate(self, attrs):
+        """Additional validation"""
+        member_account = attrs.get('member_account')
+        balance_type = attrs.get('type')
+        amount = attrs.get('amount')
+        
+        if balance_type == 'DEBIT':
+            if member_account.balance < amount:
+                if not attrs.get('remark'):
+                    attrs['remark'] = f'Balance adjustment: Original balance was {member_account.balance}. This may result in negative balance.'
         
         return attrs
 

@@ -9,9 +9,10 @@ from .serializers import (
     TransactionCreateSerializer, 
     TransactionUpdateSerializer,
     DepositSerializer,
-    WithdrawSerializer
+    WithdrawSerializer,
+    BalanceAdjustmentSerializer
 )
-from authentication.permissions import IsAdmin, IsNormalUser
+from authentication.permissions import IsAdmin, IsNormalUser, IsAdminOrAgent
 
 
 class TransactionListView(generics.ListCreateAPIView):
@@ -438,3 +439,97 @@ def get_my_balance(request):
         'email': user.email,
         'user_id': user.id
     }, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAdminOrAgent])
+def add_balance(request):
+    """
+    Admin/Agent endpoint to add or subtract balance (debit/credit) for a user.
+    POST: Create a transaction and update user balance
+    Request body:
+    {
+        "member_account": <user_id>,
+        "type": "CREDIT" or "DEBIT",
+        "amount": <decimal>,
+        "remark_type": "DEPOSIT" | "WITHDRAWAL" | "BONUS" | "PENALTY" | "ADJUSTMENT" | etc.,
+        "remark": "<optional description>"
+    }
+    """
+    serializer = BalanceAdjustmentSerializer(data=request.data)
+    
+    if not serializer.is_valid():
+        print(serializer.errors)
+        errors = {}
+        for field, error_list in serializer.errors.items():
+            if isinstance(error_list, list):
+                errors[field] = error_list[0] if error_list else 'Invalid value'
+            else:
+                errors[field] = str(error_list)
+        
+        return Response({
+            'message': 'Validation failed',
+            'errors': errors
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    member_account = serializer.validated_data['member_account']
+    balance_type = serializer.validated_data['type']
+    amount = serializer.validated_data['amount']
+    remark_type = serializer.validated_data.get('remark_type', 'ADJUSTMENT')
+    remark = serializer.validated_data.get('remark', '')
+    
+    if not request.user.is_admin:
+        if member_account.created_by != request.user:
+            return Response({
+                'error': 'You can only adjust balance for users created by you'
+            }, status=status.HTTP_403_FORBIDDEN)
+    
+    if balance_type == 'CREDIT':
+        transaction_type = 'DEPOSIT'
+        balance_change = amount
+        default_remark = f'Balance credit by {request.user.username}'
+    else:
+        transaction_type = 'WITHDRAWAL'
+        balance_change = -amount
+        default_remark = f'Balance debit by {request.user.username}'
+    
+    if not remark:
+        remark = default_remark
+    else:
+        remark = f'{default_remark}: {remark}'
+    
+    try:
+        with db_transaction.atomic():
+            transaction = Transaction.objects.create(
+                member_account=member_account,
+                type=transaction_type,
+                amount=amount,
+                remark_type=remark_type,
+                remark=remark,
+                status='COMPLETED'
+            )
+            
+            old_balance = member_account.balance
+            member_account.balance += balance_change
+            member_account.save(update_fields=['balance'])
+        
+        return Response({
+            'message': f'Balance {balance_type.lower()}ed successfully',
+            'transaction': TransactionSerializer(transaction).data,
+            'balance': {
+                'old_balance': float(old_balance),
+                'new_balance': float(member_account.balance),
+                'change': float(balance_change),
+                'type': balance_type
+            },
+            'user': {
+                'id': member_account.id,
+                'username': member_account.username,
+                'email': member_account.email
+            }
+        }, status=status.HTTP_201_CREATED)
+        
+    except Exception as e:
+        return Response({
+            'error': f'Balance adjustment failed: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
