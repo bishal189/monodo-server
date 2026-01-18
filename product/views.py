@@ -278,11 +278,22 @@ def product_dashboard(request):
     today_commission = float(today_commission)
     
     if user.level:
-        available_products = Product.objects.filter(
+        all_level_products = Product.objects.filter(
             levels=user.level,
             status='ACTIVE'
         ).prefetch_related('reviews').distinct()
+        
         entitlements_count = user.level.min_orders
+        
+        completed_reviews = ProductReview.objects.filter(
+            user=user,
+            product__in=all_level_products,
+            status='COMPLETED'
+        ).values_list('product_id', flat=True)
+        
+        remaining_orders = max(0, entitlements_count - len(completed_reviews))
+        
+        available_products = all_level_products.exclude(id__in=completed_reviews)[:remaining_orders]
     else:
         available_products = Product.objects.none()
         entitlements_count = 0
@@ -436,6 +447,15 @@ def submit_product_review(request):
                 status='COMPLETED',
                 commission_earned=commission_amount,
                 completed_at=timezone.now()
+            )
+            
+            Transaction.objects.create(
+                member_account=user,
+                type='COMMISSION',
+                amount=commission_amount,
+                remark_type='COMMISSION',
+                remark=f'Commission earned from product review: {product.title}',
+                status='COMPLETED'
             )
             
             original_account = None

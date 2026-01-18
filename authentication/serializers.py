@@ -109,6 +109,13 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         if agent:
             extra_fields['created_by'] = agent
         
+        from level.models import Level
+        try:
+            level_1 = Level.objects.get(level=1, status='ACTIVE')
+            extra_fields['level'] = level_1
+        except Level.DoesNotExist:
+            pass
+        
         user = User.objects.create_user(
             email=validated_data['email'],
             username=validated_data['username'],
@@ -454,6 +461,13 @@ class TrainingAccountCreateSerializer(serializers.ModelSerializer):
         original_account = User.objects.get(invitation_code=original_account_refer_code)
         invitation_code = self.generate_unique_invitation_code()
         
+        from level.models import Level
+        level_1 = None
+        try:
+            level_1 = Level.objects.get(level=1, status='ACTIVE')
+        except Level.DoesNotExist:
+            pass
+        
         training_account = User.objects.create_user(
             email=validated_data['email'],
             username=validated_data['username'],
@@ -464,6 +478,7 @@ class TrainingAccountCreateSerializer(serializers.ModelSerializer):
             role='USER',
             is_training_account=True,
             original_account=original_account,
+            level=level_1,
             created_by=self.context['request'].user
         )
         
