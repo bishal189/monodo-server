@@ -478,3 +478,78 @@ def submit_product_review(request):
         return Response({
             'error': f'Review submission failed: {str(e)}'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([IsAdminOrAgent])
+def reset_user_level_progress(request, user_id, level_id):
+    """
+    Reset a user's product progress for a specific level.
+    - Deletes all ProductReview records for products in that level
+    - User's balance remains the same (no commission deduction)
+    - User can then play/review products in that level again
+    - Like a game - replay levels without losing earnings
+    """
+    try:
+        user = User.objects.get(id=user_id)
+        level = Level.objects.get(id=level_id)
+        
+        if not request.user.is_admin:
+            if user.created_by != request.user:
+                return Response({
+                    'error': 'You can only reset progress for users created by you'
+                }, status=status.HTTP_403_FORBIDDEN)
+        
+        level_products = Product.objects.filter(levels=level)
+        product_ids = level_products.values_list('id', flat=True)
+        
+        user_reviews = ProductReview.objects.filter(
+            user=user,
+            product_id__in=product_ids,
+            status='COMPLETED'
+        )
+        
+        total_commission_earned = user_reviews.aggregate(
+            total=Sum('commission_earned')
+        )['total'] or 0.00
+        
+        review_count = user_reviews.count()
+        
+        from django.db import transaction as db_transaction
+        
+        with db_transaction.atomic():
+            user_reviews.delete()
+        
+        return Response({
+            'message': f'User progress reset successfully for level "{level.level_name}". Balance remains unchanged.',
+            'user': {
+                'id': user.id,
+                'username': user.username,
+                'email': user.email,
+                'balance': float(user.balance)
+            },
+            'level': {
+                'id': level.id,
+                'level_name': level.level_name
+            },
+            'reset_details': {
+                'reviews_deleted': review_count,
+                'total_commission_earned': float(total_commission_earned),
+                'balance_unchanged': True,
+                'current_balance': float(user.balance),
+                'message': 'User can now play products in this level again while keeping all earned commissions'
+            }
+        }, status=status.HTTP_200_OK)
+        
+    except User.DoesNotExist:
+        return Response({
+            'error': 'User not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    except Level.DoesNotExist:
+        return Response({
+            'error': 'Level not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return Response({
+            'error': f'Reset failed: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
