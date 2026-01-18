@@ -307,6 +307,52 @@ class AgentCreateSerializer(serializers.ModelSerializer):
         return user
 
 
+class AgentProfileUpdateSerializer(serializers.ModelSerializer):
+    login_password = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    
+    class Meta:
+        model = User
+        fields = ['username', 'email', 'phone_number', 'login_password']
+    
+    def validate_email(self, value):
+        user = self.instance
+        if User.objects.filter(email=value).exclude(pk=user.pk).exists():
+            raise serializers.ValidationError("A user with this email already exists.")
+        return value
+    
+    def validate_username(self, value):
+        user = self.instance
+        if User.objects.filter(username=value).exclude(pk=user.pk).exists():
+            raise serializers.ValidationError("A user with this username already exists.")
+        return value
+    
+    def validate_phone_number(self, value):
+        user = self.instance
+        if User.objects.filter(phone_number=value).exclude(pk=user.pk).exists():
+            raise serializers.ValidationError("A user with this phone number already exists.")
+        return value
+    
+    def validate_login_password(self, value):
+        if value and len(value) > 0:
+            try:
+                validate_password(value)
+            except Exception as e:
+                raise serializers.ValidationError(list(e.messages))
+        return value
+    
+    def update(self, instance, validated_data):
+        login_password = validated_data.pop('login_password', None)
+        
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        
+        if login_password and len(login_password) > 0:
+            instance.set_password(login_password)
+        
+        instance.save()
+        return instance
+
+
 class TrainingAccountCreateSerializer(serializers.ModelSerializer):
     login_password = serializers.CharField(write_only=True, required=True)
     confirm_login_password = serializers.CharField(write_only=True, required=True)

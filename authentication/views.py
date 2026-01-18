@@ -100,7 +100,8 @@ from .serializers import (
     UserProfileSerializer,
     UserUpdateSerializer,
     AgentCreateSerializer,
-    TrainingAccountCreateSerializer
+    TrainingAccountCreateSerializer,
+    AgentProfileUpdateSerializer
 )
 from .permissions import IsAdmin, IsAdminOrAgent, IsAgent
 from activity.utils import create_login_activity
@@ -882,3 +883,60 @@ def my_training_accounts(request):
         'training_accounts': serializer.data,
         'count': training_accounts.count()
     }, status=status.HTTP_200_OK)
+
+
+@api_view(['PUT', 'PATCH'])
+@permission_classes([IsAdmin])
+def update_agent_profile(request, agent_id):
+    if not request.user or not request.user.is_authenticated:
+        return Response({
+            'error': 'Authentication required'
+        }, status=status.HTTP_401_UNAUTHORIZED)
+    
+    if not request.user.is_admin:
+        return Response({
+            'error': 'Only admins can update agent profiles'
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    try:
+        agent = User.objects.get(id=agent_id, role='AGENT')
+        
+        partial = request.method == 'PATCH'
+        serializer = AgentProfileUpdateSerializer(agent, data=request.data, partial=partial)
+        
+        if not serializer.is_valid():
+            print(serializer.errors,'errors')
+            errors = {}
+            for field, error_list in serializer.errors.items():
+                if isinstance(error_list, list):
+                    if len(error_list) == 1:
+                        errors[field] = error_list[0]
+                    else:
+                        errors[field] = error_list
+                elif isinstance(error_list, dict):
+                    errors[field] = error_list
+                else:
+                    errors[field] = str(error_list)
+            
+            return Response({
+                'success': False,
+                'message': 'Validation failed',
+                'errors': errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        updated_agent = serializer.save()
+        
+        return Response({
+            'success': True,
+            'message': 'Agent profile updated successfully',
+            'agent': UserProfileSerializer(updated_agent).data
+        }, status=status.HTTP_200_OK)
+        
+    except User.DoesNotExist:
+        return Response({
+            'error': 'Agent not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return Response({
+            'error': f'Update failed: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

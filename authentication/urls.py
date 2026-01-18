@@ -22,6 +22,7 @@ urlpatterns = [
     path('admin/agents/', views.admin_created_agents_list, name='admin-created-agents-list'),
     path('admin/agents/create/', views.AgentCreateView.as_view(), name='admin-create-agent'),
     path('admin/agents/users/', views.admin_all_agent_created_users, name='admin-all-agent-created-users'),
+    path('admin/agents/<int:agent_id>/profile/', views.update_agent_profile, name='admin-update-agent-profile'),
     
     path('agent/dashboard/stats/', views.agent_dashboard_stats, name='agent-dashboard-stats'),
     path('agent/users/', views.agent_user_list, name='agent-user-list'),
