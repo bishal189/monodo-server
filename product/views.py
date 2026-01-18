@@ -282,7 +282,7 @@ def product_dashboard(request):
             levels=user.level,
             status='ACTIVE'
         ).prefetch_related('reviews').distinct()
-        entitlements_count = available_products.count()
+        entitlements_count = user.level.min_orders
     else:
         available_products = Product.objects.none()
         entitlements_count = 0
@@ -300,17 +300,20 @@ def product_dashboard(request):
     
     level_data = None
     commission_rate = 0.00
+    required_amount = 0
     if user.level:
         from level.serializers import LevelSerializer
         level_data = LevelSerializer(user.level).data
         commission_rate = float(user.level.commission_rate)
+        required_amount = user.level.required_points
     
     return Response({
         'records_summary': {
             'total_balance': total_balance,
             'todays_commission': today_commission,
             'entitlements': entitlements_count,
-            'completed': completed_transactions
+            'completed': completed_transactions,
+            'required_amount': required_amount
         },
         'level': level_data,
         'commission_rate': commission_rate,

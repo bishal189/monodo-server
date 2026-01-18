@@ -7,6 +7,8 @@ class ProductSerializer(serializers.ModelSerializer):
     image_url = serializers.SerializerMethodField()
     review_status = serializers.SerializerMethodField()
     potential_commission = serializers.SerializerMethodField()
+    commission_amount = serializers.SerializerMethodField()
+    commission_rate = serializers.SerializerMethodField()
     
     class Meta:
         model = Product
@@ -20,9 +22,11 @@ class ProductSerializer(serializers.ModelSerializer):
             'status',
             'review_status',
             'potential_commission',
+            'commission_amount',
+            'commission_rate',
             'created_at'
         ]
-        read_only_fields = ['id', 'created_at', 'image_url', 'review_status', 'potential_commission']
+        read_only_fields = ['id', 'created_at', 'image_url', 'review_status', 'potential_commission', 'commission_amount', 'commission_rate']
     
     def get_image_url(self, obj):
         """Return full URL for the image"""
@@ -54,6 +58,25 @@ class ProductSerializer(serializers.ModelSerializer):
         commission_rate = user.level.commission_rate
         commission_amount = (obj.price * commission_rate) / Decimal('100')
         return float(commission_amount)
+    
+    def get_commission_amount(self, obj):
+        """Calculate commission amount for the current user based on their level"""
+        from decimal import Decimal
+        user = self.context.get('user')
+        if not user or not user.is_authenticated or not user.level:
+            return None
+        
+        commission_rate = user.level.commission_rate
+        commission_amount = (obj.price * commission_rate) / Decimal('100')
+        return float(commission_amount)
+    
+    def get_commission_rate(self, obj):
+        """Return commission rate percentage for the current user's level"""
+        user = self.context.get('user')
+        if not user or not user.is_authenticated or not user.level:
+            return None
+        
+        return float(user.level.commission_rate)
     
     def validate_price(self, value):
         """Ensure price is positive"""
