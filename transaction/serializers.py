@@ -1,11 +1,12 @@
 from rest_framework import serializers
-from .models import Transaction
+from .models import Transaction, WithdrawalAccount
 from authentication.models import User
 
 
 class TransactionSerializer(serializers.ModelSerializer):
     member_account_email = serializers.EmailField(source='member_account.email', read_only=True)
     member_account_username = serializers.CharField(source='member_account.username', read_only=True)
+    withdrawal_account_details = serializers.SerializerMethodField()
     
     class Meta:
         model = Transaction
@@ -20,9 +21,17 @@ class TransactionSerializer(serializers.ModelSerializer):
             'remark_type',
             'remark',
             'status',
+            'withdrawal_account',
+            'withdrawal_account_details',
             'created_at'
         ]
         read_only_fields = ['id', 'transaction_id', 'created_at']
+    
+    def get_withdrawal_account_details(self, obj):
+        if obj.withdrawal_account:
+            serializer = WithdrawalAccountSerializer(obj.withdrawal_account)
+            return serializer.data
+        return None
     
     def validate_amount(self, value):
         """Ensure amount is positive"""
@@ -69,6 +78,7 @@ class WithdrawSerializer(serializers.Serializer):
     """Serializer for withdrawal transactions"""
     amount = serializers.DecimalField(max_digits=10, decimal_places=2, required=True)
     withdraw_password = serializers.CharField(required=True, write_only=True)
+    withdrawal_account_id = serializers.IntegerField(required=False, allow_null=True)
     remark = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     
     def validate_amount(self, value):
@@ -77,11 +87,30 @@ class WithdrawSerializer(serializers.Serializer):
             raise serializers.ValidationError("Amount must be greater than zero.")
         return value
     
+    def validate_withdrawal_account_id(self, value):
+        """Validate withdrawal account exists and belongs to user"""
+        if value is None:
+            return value
+        
+        user = self.context.get('user')
+        if not user:
+            return value
+        
+        from .models import WithdrawalAccount
+        try:
+            withdrawal_account = WithdrawalAccount.objects.get(id=value, user=user)
+            if not withdrawal_account.is_active:
+                raise serializers.ValidationError("The selected withdrawal account is not active.")
+            return value
+        except WithdrawalAccount.DoesNotExist:
+            raise serializers.ValidationError("Withdrawal account not found or does not belong to you.")
+    
     def validate(self, attrs):
         """Validate withdraw password and sufficient balance"""
         user = self.context['user']
         amount = attrs.get('amount')
         withdraw_password = attrs.get('withdraw_password')
+        withdrawal_account_id = attrs.get('withdrawal_account_id')
         
         if not user.withdraw_password:
             raise serializers.ValidationError({
@@ -97,6 +126,19 @@ class WithdrawSerializer(serializers.Serializer):
             raise serializers.ValidationError({
                 'amount': f'Insufficient balance. Available balance: {user.balance}'
             })
+        
+        from .models import WithdrawalAccount
+        if withdrawal_account_id is None:
+            primary_account = WithdrawalAccount.objects.filter(user=user, is_primary=True, is_active=True).first()
+            if not primary_account:
+                active_accounts = WithdrawalAccount.objects.filter(user=user, is_active=True).first()
+                if not active_accounts:
+                    raise serializers.ValidationError({
+                        'withdrawal_account_id': 'Please add a withdrawal account first or specify a withdrawal account.'
+                    })
+                attrs['withdrawal_account_id'] = active_accounts.id
+            else:
+                attrs['withdrawal_account_id'] = primary_account.id
         
         return attrs
 
@@ -157,3 +199,91 @@ class BalanceAdjustmentSerializer(serializers.Serializer):
         
         return attrs
 
+
+class WithdrawalAccountSerializer(serializers.ModelSerializer):
+    masked_account_number = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = WithdrawalAccount
+        fields = [
+            'id',
+            'account_holder_name',
+            'bank_name',
+            'account_number',
+            'masked_account_number',
+            'routing_number',
+            'account_type',
+            'is_active',
+            'is_primary',
+            'created_at',
+            'updated_at'
+        ]
+        read_only_fields = ['id', 'masked_account_number', 'created_at', 'updated_at']
+    
+    def get_masked_account_number(self, obj):
+        if obj.account_number:
+            if len(obj.account_number) > 4:
+                return '*' * (len(obj.account_number) - 4) + obj.account_number[-4:]
+            return '*' * len(obj.account_number)
+        return None
+
+
+class WithdrawalAccountCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WithdrawalAccount
+        fields = [
+            'account_holder_name',
+            'bank_name',
+            'account_number',
+            'routing_number',
+            'account_type',
+            'is_primary'
+        ]
+    
+    def validate_account_number(self, value):
+        if not value or len(value.strip()) == 0:
+            raise serializers.ValidationError("Account number is required.")
+        return value.strip()
+    
+    def validate_account_holder_name(self, value):
+        if not value or len(value.strip()) == 0:
+            raise serializers.ValidationError("Account holder name is required.")
+        return value.strip()
+    
+    def validate_bank_name(self, value):
+        if not value or len(value.strip()) == 0:
+            raise serializers.ValidationError("Bank name is required.")
+        return value.strip()
+    
+    def create(self, validated_data):
+        validated_data['user'] = self.context['request'].user
+        return super().create(validated_data)
+
+
+class WithdrawalAccountUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WithdrawalAccount
+        fields = [
+            'account_holder_name',
+            'bank_name',
+            'account_number',
+            'routing_number',
+            'account_type',
+            'is_active',
+            'is_primary'
+        ]
+    
+    def validate_account_number(self, value):
+        if value and len(value.strip()) == 0:
+            raise serializers.ValidationError("Account number cannot be empty.")
+        return value.strip() if value else value
+    
+    def validate_account_holder_name(self, value):
+        if value and len(value.strip()) == 0:
+            raise serializers.ValidationError("Account holder name cannot be empty.")
+        return value.strip() if value else value
+    
+    def validate_bank_name(self, value):
+        if value and len(value.strip()) == 0:
+            raise serializers.ValidationError("Bank name cannot be empty.")
+        return value.strip() if value else value

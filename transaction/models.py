@@ -75,6 +75,15 @@ class Transaction(models.Model):
         db_index=True,
         help_text="Transaction status"
     )
+    withdrawal_account = models.ForeignKey(
+        'WithdrawalAccount',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='transactions',
+        db_index=True,
+        help_text="Withdrawal account used for this transaction (if withdrawal)"
+    )
     created_at = models.DateTimeField(default=timezone.now, db_index=True)
     
     class Meta:
@@ -106,3 +115,78 @@ class Transaction(models.Model):
             transaction_id = 'TXN' + ''.join(secrets.choice(alphabet) for _ in range(12))
             if not Transaction.objects.filter(transaction_id=transaction_id).exists():
                 return transaction_id
+
+
+class WithdrawalAccount(models.Model):
+    ACCOUNT_TYPE_CHOICES = [
+        ('CHECKING', 'Checking'),
+        ('SAVINGS', 'Savings'),
+        ('BUSINESS', 'Business'),
+    ]
+    
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='withdrawal_accounts',
+        db_index=True,
+        help_text="User who owns this withdrawal account"
+    )
+    account_holder_name = models.CharField(
+        max_length=255,
+        help_text="Name of the account holder"
+    )
+    bank_name = models.CharField(
+        max_length=255,
+        help_text="Name of the bank"
+    )
+    account_number = models.CharField(
+        max_length=100,
+        db_index=True,
+        help_text="Bank account number"
+    )
+    routing_number = models.CharField(
+        max_length=50,
+        blank=True,
+        null=True,
+        help_text="Bank routing number (optional)"
+    )
+    account_type = models.CharField(
+        max_length=20,
+        choices=ACCOUNT_TYPE_CHOICES,
+        default='CHECKING',
+        help_text="Type of bank account"
+    )
+    is_active = models.BooleanField(
+        default=True,
+        db_index=True,
+        help_text="Whether this account is active for withdrawals"
+    )
+    is_primary = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Whether this is the primary withdrawal account"
+    )
+    created_at = models.DateTimeField(default=timezone.now, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'withdrawal_accounts'
+        verbose_name = 'Withdrawal Account'
+        verbose_name_plural = 'Withdrawal Accounts'
+        ordering = ['-is_primary', '-created_at']
+        indexes = [
+            models.Index(fields=['user', '-created_at']),
+            models.Index(fields=['user', 'is_active']),
+            models.Index(fields=['user', 'is_primary']),
+        ]
+    
+    def __str__(self):
+        return f"{self.account_holder_name} - {self.bank_name} - {self.account_number[-4:]}"
+    
+    def save(self, *args, **kwargs):
+        if self.is_primary:
+            WithdrawalAccount.objects.filter(
+                user=self.user,
+                is_primary=True
+            ).exclude(id=self.id).update(is_primary=False)
+        super().save(*args, **kwargs)

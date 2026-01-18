@@ -3,14 +3,17 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from django.db.models import Q
 from django.db import transaction as db_transaction
-from .models import Transaction
+from .models import Transaction, WithdrawalAccount
 from .serializers import (
     TransactionSerializer, 
     TransactionCreateSerializer, 
     TransactionUpdateSerializer,
     DepositSerializer,
     WithdrawSerializer,
-    BalanceAdjustmentSerializer
+    BalanceAdjustmentSerializer,
+    WithdrawalAccountSerializer,
+    WithdrawalAccountCreateSerializer,
+    WithdrawalAccountUpdateSerializer
 )
 from authentication.permissions import IsAdmin, IsNormalUser, IsAdminOrAgent
 
@@ -238,16 +241,22 @@ def withdraw_amount(request):
     
     amount = serializer.validated_data['amount']
     remark = serializer.validated_data.get('remark', '')
+    withdrawal_account_id = serializer.validated_data.get('withdrawal_account_id')
     user = request.user
     
     try:
+        withdrawal_account = None
+        if withdrawal_account_id:
+            withdrawal_account = WithdrawalAccount.objects.get(id=withdrawal_account_id, user=user)
+        
         transaction = Transaction.objects.create(
             member_account=user,
             type='WITHDRAWAL',
             amount=amount,
             remark=remark,
             remark_type='PAYMENT',
-            status='PENDING'
+            status='PENDING',
+            withdrawal_account=withdrawal_account
         )
         
         return Response({
@@ -256,6 +265,10 @@ def withdraw_amount(request):
             'current_balance': float(user.balance)
         }, status=status.HTTP_201_CREATED)
         
+    except WithdrawalAccount.DoesNotExist:
+        return Response({
+            'error': 'Withdrawal account not found or does not belong to you.'
+        }, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
         return Response({
             'error': f'Withdrawal failed: {str(e)}'
@@ -514,3 +527,137 @@ def admin_agent_transactions(request):
         'count': queryset.count(),
         'user_role': 'admin' if request.user.is_admin else 'agent'
     }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsNormalUser])
+def check_withdrawal_account(request):
+    try:
+        user = request.user
+        account_count = WithdrawalAccount.objects.filter(user=user).count()
+        has_account = account_count > 0
+        active_account_count = WithdrawalAccount.objects.filter(user=user, is_active=True).count()
+        primary_account = WithdrawalAccount.objects.filter(user=user, is_primary=True).first()
+        
+        response_data = {
+            'has_account': has_account,
+            'total_accounts': account_count,
+            'active_accounts': active_account_count,
+            'has_primary_account': primary_account is not None
+        }
+        
+        if primary_account:
+            serializer = WithdrawalAccountSerializer(primary_account)
+            response_data['primary_account'] = serializer.data
+        
+        return Response(response_data, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        return Response({
+            'error': f'Check failed: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsNormalUser])
+def withdrawal_accounts(request):
+    try:
+        if request.method == 'GET':
+            queryset = WithdrawalAccount.objects.filter(user=request.user)
+            
+            is_active_filter = request.query_params.get('is_active', None)
+            if is_active_filter is not None:
+                is_active = is_active_filter.lower() in ['true', '1', 'yes']
+                queryset = queryset.filter(is_active=is_active)
+            
+            queryset = queryset.order_by('-is_primary', '-created_at')
+            
+            serializer = WithdrawalAccountSerializer(queryset, many=True)
+            
+            return Response({
+                'accounts': serializer.data,
+                'count': queryset.count()
+            }, status=status.HTTP_200_OK)
+        
+        serializer = WithdrawalAccountCreateSerializer(data=request.data, context={'request': request})
+        
+        if not serializer.is_valid():
+            errors = {}
+            for field, error_list in serializer.errors.items():
+                if isinstance(error_list, list):
+                    errors[field] = error_list[0] if error_list else 'Invalid value'
+                else:
+                    errors[field] = str(error_list)
+            
+            return Response({
+                'message': 'Validation failed',
+                'errors': errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        withdrawal_account = serializer.save()
+        
+        return Response({
+            'message': 'Withdrawal account added successfully',
+            'account': WithdrawalAccountSerializer(withdrawal_account).data
+        }, status=status.HTTP_201_CREATED)
+        
+    except Exception as e:
+        return Response({
+            'error': f'Operation failed: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET', 'PUT', 'PATCH', 'DELETE'])
+@permission_classes([IsNormalUser])
+def withdrawal_account_detail(request, account_id):
+    try:
+        withdrawal_account = WithdrawalAccount.objects.get(id=account_id, user=request.user)
+        
+        if request.method == 'GET':
+            serializer = WithdrawalAccountSerializer(withdrawal_account)
+            return Response({
+                'account': serializer.data
+            }, status=status.HTTP_200_OK)
+        
+        if request.method == 'DELETE':
+            withdrawal_account.delete()
+            return Response({
+                'message': 'Withdrawal account deleted successfully'
+            }, status=status.HTTP_200_OK)
+        
+        partial = request.method == 'PATCH'
+        serializer = WithdrawalAccountUpdateSerializer(
+            withdrawal_account,
+            data=request.data,
+            partial=partial,
+            context={'request': request}
+        )
+        
+        if not serializer.is_valid():
+            errors = {}
+            for field, error_list in serializer.errors.items():
+                if isinstance(error_list, list):
+                    errors[field] = error_list[0] if error_list else 'Invalid value'
+                else:
+                    errors[field] = str(error_list)
+            
+            return Response({
+                'message': 'Validation failed',
+                'errors': errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        updated_account = serializer.save()
+        
+        return Response({
+            'message': 'Withdrawal account updated successfully',
+            'account': WithdrawalAccountSerializer(updated_account).data
+        }, status=status.HTTP_200_OK)
+        
+    except WithdrawalAccount.DoesNotExist:
+        return Response({
+            'error': 'Withdrawal account not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return Response({
+            'error': f'Operation failed: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

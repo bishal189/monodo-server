@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Transaction
+from .models import Transaction, WithdrawalAccount
 
 
 @admin.register(Transaction)
@@ -34,3 +34,34 @@ class TransactionAdmin(admin.ModelAdmin):
         if obj:  # editing an existing object
             return self.readonly_fields + ['transaction_id']
         return self.readonly_fields
+
+
+@admin.register(WithdrawalAccount)
+class WithdrawalAccountAdmin(admin.ModelAdmin):
+    list_display = [
+        'id',
+        'user',
+        'account_holder_name',
+        'bank_name',
+        'account_number',
+        'account_type',
+        'is_active',
+        'is_primary',
+        'created_at'
+    ]
+    list_filter = ['account_type', 'is_active', 'is_primary', 'created_at']
+    search_fields = ['user__email', 'user__username', 'account_holder_name', 'bank_name', 'account_number']
+    readonly_fields = ['created_at', 'updated_at']
+    ordering = ['-created_at']
+    
+    fieldsets = (
+        ('Account Information', {
+            'fields': ('user', 'account_holder_name', 'bank_name', 'account_number', 'routing_number', 'account_type')
+        }),
+        ('Status', {
+            'fields': ('is_active', 'is_primary')
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'updated_at')
+        }),
+    )

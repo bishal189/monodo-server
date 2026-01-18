@@ -14,5 +14,8 @@ urlpatterns = [
     path('<int:transaction_id>/reject/', views.reject_transaction, name='reject-transaction'),
     path('add-balance/', views.add_balance, name='add-balance'),
     path('admin-agent/', views.admin_agent_transactions, name='admin-agent-transactions'),
+    path('withdrawal-accounts/check/', views.check_withdrawal_account, name='check-withdrawal-account'),
+    path('withdrawal-accounts/', views.withdrawal_accounts, name='withdrawal-accounts'),
+    path('withdrawal-accounts/<int:account_id>/', views.withdrawal_account_detail, name='withdrawal-account-detail'),
 ]
 
