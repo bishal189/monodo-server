@@ -16,31 +16,23 @@ from authentication.permissions import IsAdmin, IsNormalUser, IsAdminOrAgent
 
 
 class TransactionListView(generics.ListCreateAPIView):
-    """
-    GET: List all transactions
-    POST: Create a new transaction
-    """
     permission_classes = [IsAdmin]
     
     def get_queryset(self):
         queryset = Transaction.objects.select_related('member_account').all()
         
-        # Filter by status
         status_filter = self.request.query_params.get('status', None)
         if status_filter:
             queryset = queryset.filter(status=status_filter.upper())
         
-        # Filter by type
         type_filter = self.request.query_params.get('type', None)
         if type_filter:
             queryset = queryset.filter(type=type_filter.upper())
         
-        # Filter by member account
         member_id = self.request.query_params.get('member_account', None)
         if member_id:
             queryset = queryset.filter(member_account_id=member_id)
         
-        # Search by transaction ID or member email
         search = self.request.query_params.get('search', None)
         if search:
             queryset = queryset.filter(
@@ -49,7 +41,6 @@ class TransactionListView(generics.ListCreateAPIView):
                 Q(member_account__username__icontains=search)
             )
         
-        # Filter by date range
         date_from = self.request.query_params.get('date_from', None)
         date_to = self.request.query_params.get('date_to', None)
         if date_from:
@@ -95,11 +86,6 @@ class TransactionListView(generics.ListCreateAPIView):
 
 
 class TransactionDetailView(generics.RetrieveUpdateDestroyAPIView):
-    """
-    GET: Retrieve a specific transaction
-    PUT/PATCH: Update a specific transaction
-    DELETE: Delete a specific transaction
-    """
     queryset = Transaction.objects.select_related('member_account').all()
     permission_classes = [IsAdmin]
     lookup_field = 'id'
@@ -144,25 +130,18 @@ class TransactionDetailView(generics.RetrieveUpdateDestroyAPIView):
 @api_view(['GET', 'POST'])
 @permission_classes([IsNormalUser])
 def my_deposit(request):
-    """
-    GET: Get all deposit transactions for the currently logged-in user
-    POST: Create a deposit transaction request
-    """
     user = request.user
     
     if request.method == 'GET':
-        # Get all deposit transactions for the user
         queryset = Transaction.objects.filter(
             member_account=user,
             type='DEPOSIT'
         )
         
-        # Filter by status
         status_filter = request.query_params.get('status', None)
         if status_filter:
             queryset = queryset.filter(status=status_filter.upper())
         
-        # Filter by date range
         date_from = request.query_params.get('date_from', None)
         date_to = request.query_params.get('date_to', None)
         if date_from:
@@ -170,12 +149,10 @@ def my_deposit(request):
         if date_to:
             queryset = queryset.filter(created_at__lte=date_to)
         
-        # Order by creation date (newest first)
         queryset = queryset.order_by('-created_at')
         
         serializer = TransactionSerializer(queryset, many=True)
         
-        # Calculate approved balance breakdown
         from django.db.models import Sum
         approved_deposits = Transaction.objects.filter(
             member_account=user,
@@ -220,7 +197,6 @@ def my_deposit(request):
     user = request.user
     
     try:
-        # Create transaction record with PENDING status
         transaction = Transaction.objects.create(
             member_account=user,
             type='DEPOSIT',
@@ -245,11 +221,6 @@ def my_deposit(request):
 @api_view(['POST'])
 @permission_classes([IsNormalUser])
 def withdraw_amount(request):
-    """
-    Withdraw amount from the currently logged-in user's account.
-    POST: Create a withdrawal transaction and update user balance
-    Requires withdraw password verification.
-    """
     serializer = WithdrawSerializer(data=request.data, context={'user': request.user})
     
     if not serializer.is_valid():
@@ -270,7 +241,6 @@ def withdraw_amount(request):
     user = request.user
     
     try:
-        # Create transaction record with PENDING status
         transaction = Transaction.objects.create(
             member_account=user,
             type='WITHDRAWAL',
@@ -293,44 +263,42 @@ def withdraw_amount(request):
 
 
 @api_view(['POST'])
-@permission_classes([IsAdmin])
+@permission_classes([IsAdminOrAgent])
 def approve_transaction(request, transaction_id):
-    """
-    Approve a pending transaction and update user balance.
-    Only accessible by admins.
-    POST: Approve transaction and update balance
-    """
     try:
-        transaction = Transaction.objects.select_related('member_account').get(id=transaction_id)
+        transaction = Transaction.objects.select_related('member_account', 'member_account__created_by').get(id=transaction_id)
         
-        # Check if transaction is pending
-        if transaction.status != 'PENDING':
+        if not request.user.is_admin:
+            if transaction.member_account.created_by != request.user:
+                return Response({
+                    'error': 'You can only approve transactions for users created by you'
+                }, status=status.HTTP_403_FORBIDDEN)
+        
+        if transaction.status not in ['PENDING', 'FAILED', 'COMPLETED']:
             return Response({
-                'error': f'Transaction is already {transaction.status.lower()}. Only pending transactions can be approved.'
+                'error': f'Transaction is {transaction.status.lower()}. Cannot approve this transaction.'
             }, status=status.HTTP_400_BAD_REQUEST)
         
         user = transaction.member_account
+        is_already_completed = transaction.status == 'COMPLETED'
         
-        # Use database transaction to ensure atomicity
         with db_transaction.atomic():
-            # Update transaction status
             transaction.status = 'COMPLETED'
             transaction.save(update_fields=['status'])
             
-            # Update user balance based on transaction type
-            if transaction.type == 'DEPOSIT':
-                user.balance += transaction.amount
-            elif transaction.type == 'WITHDRAWAL':
-                # Double-check balance is sufficient (in case it changed)
-                if user.balance < transaction.amount:
-                    transaction.status = 'FAILED'
-                    transaction.save(update_fields=['status'])
-                    return Response({
-                        'error': 'Insufficient balance. Transaction marked as failed.'
-                    }, status=status.HTTP_400_BAD_REQUEST)
-                user.balance -= transaction.amount
-            
-            user.save(update_fields=['balance'])
+            if not is_already_completed:
+                if transaction.type == 'DEPOSIT':
+                    user.balance += transaction.amount
+                elif transaction.type == 'WITHDRAWAL':
+                    if user.balance < transaction.amount:
+                        transaction.status = 'FAILED'
+                        transaction.save(update_fields=['status'])
+                        return Response({
+                            'error': 'Insufficient balance. Transaction marked as failed.'
+                        }, status=status.HTTP_400_BAD_REQUEST)
+                    user.balance -= transaction.amount
+                
+                user.save(update_fields=['balance'])
         
         return Response({
             'message': 'Transaction approved successfully',
@@ -349,29 +317,40 @@ def approve_transaction(request, transaction_id):
 
 
 @api_view(['POST'])
-@permission_classes([IsAdmin])
+@permission_classes([IsAdminOrAgent])
 def reject_transaction(request, transaction_id):
-    """
-    Reject a pending transaction.
-    Only accessible by admins.
-    POST: Reject transaction (status changed to FAILED or CANCELLED)
-    """
     try:
-        transaction = Transaction.objects.get(id=transaction_id)
+        transaction = Transaction.objects.select_related('member_account', 'member_account__created_by').get(id=transaction_id)
         
-        # Check if transaction is pending
-        if transaction.status != 'PENDING':
+        if not request.user.is_admin:
+            if transaction.member_account.created_by != request.user:
+                return Response({
+                    'error': 'You can only reject transactions for users created by you'
+                }, status=status.HTTP_403_FORBIDDEN)
+        
+        if transaction.status not in ['PENDING', 'FAILED', 'COMPLETED']:
             return Response({
-                'error': f'Transaction is already {transaction.status.lower()}. Only pending transactions can be rejected.'
+                'error': f'Transaction is {transaction.status.lower()}. Cannot reject this transaction.'
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        # Update transaction status to FAILED
-        transaction.status = 'FAILED'
-        transaction.save(update_fields=['status'])
+        user = transaction.member_account
+        is_completed = transaction.status == 'COMPLETED'
+        
+        with db_transaction.atomic():
+            if is_completed:
+                if transaction.type == 'DEPOSIT':
+                    user.balance -= transaction.amount
+                elif transaction.type == 'WITHDRAWAL':
+                    user.balance += transaction.amount
+                user.save(update_fields=['balance'])
+            
+            transaction.status = 'FAILED'
+            transaction.save(update_fields=['status'])
         
         return Response({
             'message': 'Transaction rejected successfully',
-            'transaction': TransactionSerializer(transaction).data
+            'transaction': TransactionSerializer(transaction).data,
+            'new_balance': float(user.balance) if is_completed else None
         }, status=status.HTTP_200_OK)
         
     except Transaction.DoesNotExist:
@@ -387,24 +366,17 @@ def reject_transaction(request, transaction_id):
 @api_view(['GET'])
 @permission_classes([IsNormalUser])
 def get_my_transactions(request):
-    """
-    Get all transactions for the currently logged-in user.
-    GET: Retrieve user's own transactions
-    """
     user = request.user
     queryset = Transaction.objects.filter(member_account=user)
     
-    # Filter by status
     status_filter = request.query_params.get('status', None)
     if status_filter:
         queryset = queryset.filter(status=status_filter.upper())
     
-    # Filter by type
     type_filter = request.query_params.get('type', None)
     if type_filter:
         queryset = queryset.filter(type=type_filter.upper())
     
-    # Filter by date range
     date_from = request.query_params.get('date_from', None)
     date_to = request.query_params.get('date_to', None)
     if date_from:
@@ -412,7 +384,6 @@ def get_my_transactions(request):
     if date_to:
         queryset = queryset.filter(created_at__lte=date_to)
     
-    # Order by creation date (newest first)
     queryset = queryset.order_by('-created_at')
     
     serializer = TransactionSerializer(queryset, many=True)
@@ -427,10 +398,6 @@ def get_my_transactions(request):
 @api_view(['GET'])
 @permission_classes([IsNormalUser])
 def get_my_balance(request):
-    """
-    Get the current balance for the currently logged-in user.
-    GET: Retrieve user's account balance
-    """
     user = request.user
     
     return Response({
@@ -444,22 +411,9 @@ def get_my_balance(request):
 @api_view(['POST'])
 @permission_classes([IsAdminOrAgent])
 def add_balance(request):
-    """
-    Admin/Agent endpoint to add or subtract balance (debit/credit) for a user.
-    POST: Create a transaction and update user balance
-    Request body:
-    {
-        "member_account": <user_id>,
-        "type": "CREDIT" or "DEBIT",
-        "amount": <decimal>,
-        "remark_type": "DEPOSIT" | "WITHDRAWAL" | "BONUS" | "PENALTY" | "ADJUSTMENT" | etc.,
-        "remark": "<optional description>"
-    }
-    """
     serializer = BalanceAdjustmentSerializer(data=request.data)
     
     if not serializer.is_valid():
-        print(serializer.errors)
         errors = {}
         for field, error_list in serializer.errors.items():
             if isinstance(error_list, list):
@@ -475,8 +429,6 @@ def add_balance(request):
     member_account = serializer.validated_data['member_account']
     balance_type = serializer.validated_data['type']
     amount = serializer.validated_data['amount']
-    remark_type = serializer.validated_data.get('remark_type', 'ADJUSTMENT')
-    remark = serializer.validated_data.get('remark', '')
     
     if not request.user.is_admin:
         if member_account.created_by != request.user:
@@ -485,37 +437,18 @@ def add_balance(request):
             }, status=status.HTTP_403_FORBIDDEN)
     
     if balance_type == 'CREDIT':
-        transaction_type = 'DEPOSIT'
         balance_change = amount
-        default_remark = f'Balance credit by {request.user.username}'
     else:
-        transaction_type = 'WITHDRAWAL'
         balance_change = -amount
-        default_remark = f'Balance debit by {request.user.username}'
-    
-    if not remark:
-        remark = default_remark
-    else:
-        remark = f'{default_remark}: {remark}'
     
     try:
         with db_transaction.atomic():
-            transaction = Transaction.objects.create(
-                member_account=member_account,
-                type=transaction_type,
-                amount=amount,
-                remark_type=remark_type,
-                remark=remark,
-                status='COMPLETED'
-            )
-            
             old_balance = member_account.balance
             member_account.balance += balance_change
             member_account.save(update_fields=['balance'])
         
         return Response({
             'message': f'Balance {balance_type.lower()}ed successfully',
-            'transaction': TransactionSerializer(transaction).data,
             'balance': {
                 'old_balance': float(old_balance),
                 'new_balance': float(member_account.balance),
@@ -527,9 +460,57 @@ def add_balance(request):
                 'username': member_account.username,
                 'email': member_account.email
             }
-        }, status=status.HTTP_201_CREATED)
+        }, status=status.HTTP_200_OK)
         
     except Exception as e:
         return Response({
             'error': f'Balance adjustment failed: {str(e)}'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([IsAdminOrAgent])
+def admin_agent_transactions(request):
+    if request.user.is_admin:
+        queryset = Transaction.objects.select_related('member_account', 'member_account__created_by').all()
+    else:
+        queryset = Transaction.objects.select_related('member_account', 'member_account__created_by').filter(
+            member_account__created_by=request.user
+        )
+    
+    status_filter = request.query_params.get('status', None)
+    if status_filter:
+        queryset = queryset.filter(status=status_filter.upper())
+    
+    type_filter = request.query_params.get('type', None)
+    if type_filter:
+        queryset = queryset.filter(type=type_filter.upper())
+    
+    member_id = request.query_params.get('member_account', None)
+    if member_id:
+        queryset = queryset.filter(member_account_id=member_id)
+    
+    search = request.query_params.get('search', None)
+    if search:
+        queryset = queryset.filter(
+            Q(transaction_id__icontains=search) |
+            Q(member_account__email__icontains=search) |
+            Q(member_account__username__icontains=search)
+        )
+    
+    date_from = request.query_params.get('date_from', None)
+    date_to = request.query_params.get('date_to', None)
+    if date_from:
+        queryset = queryset.filter(created_at__gte=date_from)
+    if date_to:
+        queryset = queryset.filter(created_at__lte=date_to)
+    
+    queryset = queryset.order_by('-created_at')
+    
+    serializer = TransactionSerializer(queryset, many=True)
+    
+    return Response({
+        'transactions': serializer.data,
+        'count': queryset.count(),
+        'user_role': 'admin' if request.user.is_admin else 'agent'
+    }, status=status.HTTP_200_OK)

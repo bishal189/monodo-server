@@ -442,31 +442,12 @@ def submit_product_review(request):
                 original_account = user.original_account
                 original_account_bonus = (commission_amount * Decimal('30')) / Decimal('100')
                 
-                Transaction.objects.create(
-                    member_account=original_account,
-                    type='COMMISSION',
-                    amount=original_account_bonus,
-                    remark=f'30% commission bonus from training account: {user.username} - Product: {product.title}',
-                    remark_type='COMMISSION',
-                    status='COMPLETED'
-                )
-                
                 original_account.balance += original_account_bonus
                 original_account.save(update_fields=['balance'])
-            
-            commission_transaction = Transaction.objects.create(
-                member_account=user,
-                type='COMMISSION',
-                amount=commission_amount,
-                remark=f'Commission for reviewing product: {product.title}',
-                remark_type='COMMISSION',
-                status='COMPLETED'
-            )
             
             user.balance += commission_amount
             user.save(update_fields=['balance'])
         
-        from transaction.serializers import TransactionSerializer
         review_data = ProductReviewSerializer(review).data
         
         response_data = {
@@ -474,8 +455,7 @@ def submit_product_review(request):
             'review': review_data,
             'commission': {
                 'amount': float(commission_amount),
-                'rate': commission_rate,
-                'transaction_id': commission_transaction.transaction_id
+                'rate': commission_rate
             },
             'new_balance': float(user.balance)
         }

@@ -13,5 +13,6 @@ urlpatterns = [
     path('<int:transaction_id>/approve/', views.approve_transaction, name='approve-transaction'),
     path('<int:transaction_id>/reject/', views.reject_transaction, name='reject-transaction'),
     path('add-balance/', views.add_balance, name='add-balance'),
+    path('admin-agent/', views.admin_agent_transactions, name='admin-agent-transactions'),
 ]
 
