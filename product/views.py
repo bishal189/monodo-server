@@ -515,13 +515,20 @@ def reset_user_level_progress(request, user_id, level_id):
         
         review_count = user_reviews.count()
         
+        completed_transactions = Transaction.objects.filter(
+            member_account=user,
+            status='COMPLETED'
+        )
+        completed_transaction_count = completed_transactions.count()
+        
         from django.db import transaction as db_transaction
         
         with db_transaction.atomic():
             user_reviews.delete()
+            completed_transactions.delete()
         
         return Response({
-            'message': f'User progress reset successfully for level "{level.level_name}". Balance remains unchanged.',
+            'message': f'User progress reset successfully for level "{level.level_name}". Balance remains unchanged. Fresh start - completed count reset to 0.',
             'user': {
                 'id': user.id,
                 'username': user.username,
@@ -534,10 +541,13 @@ def reset_user_level_progress(request, user_id, level_id):
             },
             'reset_details': {
                 'reviews_deleted': review_count,
+                'completed_transactions_deleted': completed_transaction_count,
                 'total_commission_earned': float(total_commission_earned),
                 'balance_unchanged': True,
                 'current_balance': float(user.balance),
-                'message': 'User can now play products in this level again while keeping all earned commissions'
+                'total_completed_reset': True,
+                'new_completed_count': 0,
+                'message': 'User can now play products in this level again. Fresh game - all completed counts reset to 0 while keeping all earned commissions'
             }
         }, status=status.HTTP_200_OK)
         
