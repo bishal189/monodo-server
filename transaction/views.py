@@ -661,3 +661,17 @@ def withdrawal_account_detail(request, account_id):
         return Response({
             'error': f'Operation failed: {str(e)}'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([permissions.AllowAny])
+def get_crypto_networks(request):
+    """Get available crypto network options"""
+    networks = [
+        {'value': choice[0], 'label': choice[1]} 
+        for choice in WithdrawalAccount.CRYPTO_NETWORK_CHOICES
+    ]
+    return Response({
+        'crypto_networks': networks,
+        'options': [choice[0] for choice in WithdrawalAccount.CRYPTO_NETWORK_CHOICES]
+    }, status=status.HTTP_200_OK)

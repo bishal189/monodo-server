@@ -118,10 +118,12 @@ class Transaction(models.Model):
 
 
 class WithdrawalAccount(models.Model):
-    ACCOUNT_TYPE_CHOICES = [
-        ('CHECKING', 'Checking'),
-        ('SAVINGS', 'Savings'),
-        ('BUSINESS', 'Business'),
+    CRYPTO_NETWORK_CHOICES = [
+        ('TRC20', 'TRC20'),
+        ('USDT', 'USDT'),
+        ('BTC', 'BTC'),
+        ('USDC', 'USDC'),
+        ('ETH', 'ETH'),
     ]
     
     user = models.ForeignKey(
@@ -135,26 +137,19 @@ class WithdrawalAccount(models.Model):
         max_length=255,
         help_text="Name of the account holder"
     )
-    bank_name = models.CharField(
+    crypto_wallet_address = models.CharField(
         max_length=255,
-        help_text="Name of the bank"
-    )
-    account_number = models.CharField(
-        max_length=100,
         db_index=True,
-        help_text="Bank account number"
+        help_text="Crypto wallet address"
     )
-    routing_number = models.CharField(
-        max_length=50,
-        blank=True,
-        null=True,
-        help_text="Bank routing number (optional)"
-    )
-    account_type = models.CharField(
+    crypto_network = models.CharField(
         max_length=20,
-        choices=ACCOUNT_TYPE_CHOICES,
-        default='CHECKING',
-        help_text="Type of bank account"
+        choices=CRYPTO_NETWORK_CHOICES,
+        help_text="Crypto network (TRC20, USDT, BTC, USDC, ETH)"
+    )
+    crypto_wallet_name = models.CharField(
+        max_length=255,
+        help_text="Name of the crypto wallet"
     )
     is_active = models.BooleanField(
         default=True,
@@ -181,9 +176,33 @@ class WithdrawalAccount(models.Model):
         ]
     
     def __str__(self):
-        return f"{self.account_holder_name} - {self.bank_name} - {self.account_number[-4:]}"
+        return f"{self.account_holder_name} - {self.crypto_wallet_name} - {self.crypto_network}"
+    
+    def clean(self):
+        """Validate crypto network before saving"""
+        from django.core.exceptions import ValidationError
+        if self.crypto_network:
+            valid_networks = [choice[0] for choice in self.CRYPTO_NETWORK_CHOICES]
+            network_upper = self.crypto_network.upper().strip()
+            if network_upper not in valid_networks:
+                raise ValidationError({
+                    'crypto_network': f"Invalid crypto network. Must be one of: {', '.join(valid_networks)}"
+                })
+            # Ensure uppercase
+            self.crypto_network = network_upper
     
     def save(self, *args, **kwargs):
+        # Validate and normalize crypto_network
+        if self.crypto_network:
+            valid_networks = [choice[0] for choice in self.CRYPTO_NETWORK_CHOICES]
+            network_upper = self.crypto_network.upper().strip()
+            if network_upper not in valid_networks:
+                from django.core.exceptions import ValidationError
+                raise ValidationError({
+                    'crypto_network': f"Invalid crypto network. Must be one of: {', '.join(valid_networks)}"
+                })
+            self.crypto_network = network_upper
+        
         if self.is_primary:
             WithdrawalAccount.objects.filter(
                 user=self.user,

@@ -31,13 +31,18 @@ class Product(models.Model):
         blank=True,
         help_text="Levels this product is assigned to"
     )
+    position = models.IntegerField(
+        default=0,
+        db_index=True,
+        help_text="Display position/order for the product (lower number = higher position)"
+    )
     created_at = models.DateTimeField(default=timezone.now, db_index=True)
     
     class Meta:
         db_table = 'products'
         verbose_name = 'Product'
         verbose_name_plural = 'Products'
-        ordering = ['-created_at']
+        ordering = ['position', '-created_at']
     
     def __str__(self):
         return self.title

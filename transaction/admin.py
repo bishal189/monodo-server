@@ -42,21 +42,21 @@ class WithdrawalAccountAdmin(admin.ModelAdmin):
         'id',
         'user',
         'account_holder_name',
-        'bank_name',
-        'account_number',
-        'account_type',
+        'crypto_wallet_name',
+        'crypto_network',
+        'crypto_wallet_address',
         'is_active',
         'is_primary',
         'created_at'
     ]
-    list_filter = ['account_type', 'is_active', 'is_primary', 'created_at']
-    search_fields = ['user__email', 'user__username', 'account_holder_name', 'bank_name', 'account_number']
+    list_filter = ['crypto_network', 'is_active', 'is_primary', 'created_at']
+    search_fields = ['user__email', 'user__username', 'account_holder_name', 'crypto_wallet_name', 'crypto_wallet_address']
     readonly_fields = ['created_at', 'updated_at']
     ordering = ['-created_at']
     
     fieldsets = (
         ('Account Information', {
-            'fields': ('user', 'account_holder_name', 'bank_name', 'account_number', 'routing_number', 'account_type')
+            'fields': ('user', 'account_holder_name', 'crypto_wallet_name', 'crypto_network', 'crypto_wallet_address')
         }),
         ('Status', {
             'fields': ('is_active', 'is_primary')

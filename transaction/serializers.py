@@ -201,48 +201,51 @@ class BalanceAdjustmentSerializer(serializers.Serializer):
 
 
 class WithdrawalAccountSerializer(serializers.ModelSerializer):
-    masked_account_number = serializers.SerializerMethodField()
+    masked_wallet_address = serializers.SerializerMethodField()
     
     class Meta:
         model = WithdrawalAccount
         fields = [
             'id',
             'account_holder_name',
-            'bank_name',
-            'account_number',
-            'masked_account_number',
-            'routing_number',
-            'account_type',
+            'crypto_wallet_address',
+            'masked_wallet_address',
+            'crypto_network',
+            'crypto_wallet_name',
             'is_active',
             'is_primary',
             'created_at',
             'updated_at'
         ]
-        read_only_fields = ['id', 'masked_account_number', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'masked_wallet_address', 'created_at', 'updated_at']
     
-    def get_masked_account_number(self, obj):
-        if obj.account_number:
-            if len(obj.account_number) > 4:
-                return '*' * (len(obj.account_number) - 4) + obj.account_number[-4:]
-            return '*' * len(obj.account_number)
+    def get_masked_wallet_address(self, obj):
+        if obj.crypto_wallet_address:
+            if len(obj.crypto_wallet_address) > 8:
+                return obj.crypto_wallet_address[:6] + '...' + obj.crypto_wallet_address[-4:]
+            return '*' * len(obj.crypto_wallet_address)
         return None
 
 
 class WithdrawalAccountCreateSerializer(serializers.ModelSerializer):
+    crypto_network = serializers.ChoiceField(
+        choices=WithdrawalAccount.CRYPTO_NETWORK_CHOICES,
+        help_text="Crypto network: TRC20, USDT, BTC, USDC, or ETH"
+    )
+    
     class Meta:
         model = WithdrawalAccount
         fields = [
             'account_holder_name',
-            'bank_name',
-            'account_number',
-            'routing_number',
-            'account_type',
+            'crypto_wallet_address',
+            'crypto_network',
+            'crypto_wallet_name',
             'is_primary'
         ]
     
-    def validate_account_number(self, value):
+    def validate_crypto_wallet_address(self, value):
         if not value or len(value.strip()) == 0:
-            raise serializers.ValidationError("Account number is required.")
+            raise serializers.ValidationError("Crypto wallet address is required.")
         return value.strip()
     
     def validate_account_holder_name(self, value):
@@ -250,10 +253,22 @@ class WithdrawalAccountCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Account holder name is required.")
         return value.strip()
     
-    def validate_bank_name(self, value):
+    def validate_crypto_wallet_name(self, value):
         if not value or len(value.strip()) == 0:
-            raise serializers.ValidationError("Bank name is required.")
+            raise serializers.ValidationError("Crypto wallet name is required.")
         return value.strip()
+    
+    def validate_crypto_network(self, value):
+        if not value:
+            raise serializers.ValidationError("Crypto network is required.")
+        # Convert to uppercase to handle case-insensitive input
+        value = value.upper().strip()
+        valid_networks = [choice[0] for choice in WithdrawalAccount.CRYPTO_NETWORK_CHOICES]
+        if value not in valid_networks:
+            raise serializers.ValidationError(
+                f"Invalid crypto network '{value}'. Must be one of: {', '.join(valid_networks)}"
+            )
+        return value
     
     def create(self, validated_data):
         validated_data['user'] = self.context['request'].user
@@ -261,21 +276,26 @@ class WithdrawalAccountCreateSerializer(serializers.ModelSerializer):
 
 
 class WithdrawalAccountUpdateSerializer(serializers.ModelSerializer):
+    crypto_network = serializers.ChoiceField(
+        choices=WithdrawalAccount.CRYPTO_NETWORK_CHOICES,
+        required=False,
+        help_text="Crypto network: TRC20, USDT, BTC, USDC, or ETH"
+    )
+    
     class Meta:
         model = WithdrawalAccount
         fields = [
             'account_holder_name',
-            'bank_name',
-            'account_number',
-            'routing_number',
-            'account_type',
+            'crypto_wallet_address',
+            'crypto_network',
+            'crypto_wallet_name',
             'is_active',
             'is_primary'
         ]
     
-    def validate_account_number(self, value):
+    def validate_crypto_wallet_address(self, value):
         if value and len(value.strip()) == 0:
-            raise serializers.ValidationError("Account number cannot be empty.")
+            raise serializers.ValidationError("Crypto wallet address cannot be empty.")
         return value.strip() if value else value
     
     def validate_account_holder_name(self, value):
@@ -283,7 +303,18 @@ class WithdrawalAccountUpdateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Account holder name cannot be empty.")
         return value.strip() if value else value
     
-    def validate_bank_name(self, value):
+    def validate_crypto_wallet_name(self, value):
         if value and len(value.strip()) == 0:
-            raise serializers.ValidationError("Bank name cannot be empty.")
+            raise serializers.ValidationError("Crypto wallet name cannot be empty.")
         return value.strip() if value else value
+    
+    def validate_crypto_network(self, value):
+        if value:
+            # Convert to uppercase to handle case-insensitive input
+            value = value.upper().strip()
+            valid_networks = [choice[0] for choice in WithdrawalAccount.CRYPTO_NETWORK_CHOICES]
+            if value not in valid_networks:
+                raise serializers.ValidationError(
+                    f"Invalid crypto network '{value}'. Must be one of: {', '.join(valid_networks)}"
+                )
+        return value

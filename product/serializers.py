@@ -20,6 +20,7 @@ class ProductSerializer(serializers.ModelSerializer):
             'description',
             'price',
             'status',
+            'position',
             'review_status',
             'potential_commission',
             'commission_amount',

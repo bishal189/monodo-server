@@ -12,5 +12,10 @@ urlpatterns = [
     path('review/', views.submit_product_review, name='submit-product-review'),
     path('reviews/', views.get_products_by_review_status, name='get-products-by-review-status'),
     path('reset/user/<int:user_id>/level/<int:level_id>/', views.reset_user_level_progress, name='reset-user-level-progress'),
+    path('user-completion-stats/', views.user_product_completion_stats, name='user-product-completion-stats'),
+    path('user/products/', views.get_user_products_by_min_orders, name='get-user-products-by-min-orders'),
+    path('admin/user/<int:user_id>/products/', views.get_user_products_for_admin, name='get-user-products-for-admin'),
+    path('admin/user/<int:user_id>/completed-count/', views.get_user_completed_products_count, name='get-user-completed-products-count'),
+    path('<int:product_id>/position/', views.insert_product_at_position, name='insert-product-at-position'),
 ]
 

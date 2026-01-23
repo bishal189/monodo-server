@@ -1,9 +1,9 @@
 from rest_framework import status, generics, permissions
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
-from django.db.models import Q, Sum
+from django.db.models import Q, Sum, Count, F
 from django.utils import timezone
-from datetime import datetime
+from datetime import datetime, timedelta
 from .models import Product, ProductReview
 from .serializers import (
     ProductSerializer, 
@@ -53,7 +53,7 @@ class ProductListView(generics.ListCreateAPIView):
             except ValueError:
                 pass
         
-        return queryset.order_by('-created_at')
+        return queryset.order_by('position', '-created_at')
     
     def get_serializer_class(self):
         if self.request.method == 'POST':
@@ -281,7 +281,7 @@ def product_dashboard(request):
         all_level_products = Product.objects.filter(
             levels=user.level,
             status='ACTIVE'
-        ).prefetch_related('reviews').distinct()
+        ).prefetch_related('reviews').distinct().order_by('position', '-created_at')
         
         entitlements_count = user.level.min_orders
         
@@ -293,7 +293,8 @@ def product_dashboard(request):
         
         remaining_orders = max(0, entitlements_count - len(completed_reviews))
         
-        available_products = all_level_products.exclude(id__in=completed_reviews)[:remaining_orders]
+        available_products_queryset = all_level_products.exclude(id__in=completed_reviews).order_by('position', '-created_at')
+        available_products = list(available_products_queryset[:remaining_orders])
     else:
         available_products = Product.objects.none()
         entitlements_count = 0
@@ -586,3 +587,338 @@ def reset_user_level_progress(request, user_id, level_id):
         return Response({
             'error': f'Reset failed: {str(e)}'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([IsAdminOrAgent])
+def user_product_completion_stats(request):
+    """
+    Get product completion statistics for users.
+    Admin can see all users, Agent can only see their created users.
+    Returns: User stats with completed products count, total commission, and product details
+    """
+    if request.user.is_admin:
+        users_queryset = User.objects.filter(role='USER').select_related('level', 'created_by')
+    else:
+        users_queryset = User.objects.filter(
+            role='USER',
+            created_by=request.user
+        ).select_related('level', 'created_by')
+    
+    search = request.query_params.get('search', None)
+    if search:
+        users_queryset = users_queryset.filter(
+            Q(email__icontains=search) |
+            Q(username__icontains=search) |
+            Q(phone_number__icontains=search) |
+            Q(invitation_code__icontains=search)
+        )
+    
+    is_active = request.query_params.get('is_active', None)
+    if is_active is not None:
+        users_queryset = users_queryset.filter(is_active=is_active.lower() == 'true')
+    
+    user_id = request.query_params.get('user_id', None)
+    if user_id:
+        users_queryset = users_queryset.filter(id=user_id)
+    
+    users_stats = []
+    
+    for user in users_queryset:
+        completed_reviews = ProductReview.objects.filter(
+            user=user,
+            status='COMPLETED'
+        )
+        
+        total_completed = completed_reviews.count()
+        total_commission = completed_reviews.aggregate(
+            total=Sum('commission_earned')
+        )['total'] or 0.00
+        
+        today = timezone.now().date()
+        today_start = timezone.make_aware(datetime.combine(today, datetime.min.time()))
+        today_completed = completed_reviews.filter(completed_at__gte=today_start).count()
+        
+        this_week_start = timezone.now() - timedelta(days=7)
+        week_completed = completed_reviews.filter(completed_at__gte=this_week_start).count()
+        
+        products_breakdown = completed_reviews.values(
+            'product__id',
+            'product__title',
+            'product__price'
+        ).annotate(
+            completed_count=Count('id'),
+            commission_earned=Sum('commission_earned')
+        ).order_by('-completed_at')
+        
+        products_data = []
+        for item in products_breakdown[:10]:
+            products_data.append({
+                'product_id': item['product__id'],
+                'product_title': item['product__title'],
+                'product_price': float(item['product__price']),
+                'completed_count': item['completed_count'],
+                'commission_earned': float(item['commission_earned'])
+            })
+        
+        recent_reviews = completed_reviews.order_by('-completed_at')[:5]
+        recent_activity = []
+        for review in recent_reviews:
+            recent_activity.append({
+                'product_id': review.product.id,
+                'product_title': review.product.title,
+                'commission_earned': float(review.commission_earned),
+                'completed_at': review.completed_at.isoformat() if review.completed_at else None
+            })
+        
+        users_stats.append({
+            'user_id': user.id,
+            'username': user.username,
+            'email': user.email,
+            'phone_number': user.phone_number,
+            'invitation_code': user.invitation_code,
+            'level': {
+                'id': user.level.id if user.level else None,
+                'level_name': user.level.level_name if user.level else None,
+                'level_number': user.level.level if user.level else None
+            } if user.level else None,
+            'created_by': {
+                'id': user.created_by.id if user.created_by else None,
+                'username': user.created_by.username if user.created_by else None,
+                'email': user.created_by.email if user.created_by else None
+            } if user.created_by else None,
+            'is_training_account': user.is_training_account,
+            'balance': float(user.balance),
+            'is_active': user.is_active,
+            'statistics': {
+                'total_completed_products': total_completed,
+                'total_commission_earned': float(total_commission),
+                'today_completed': today_completed,
+                'week_completed': week_completed,
+                'products_breakdown': products_data,
+                'recent_activity': recent_activity
+            }
+        })
+    
+    return Response({
+        'users': users_stats,
+        'total_users': len(users_stats),
+        'summary': {
+            'total_completed_products': sum(user['statistics']['total_completed_products'] for user in users_stats),
+            'total_commission_paid': sum(user['statistics']['total_commission_earned'] for user in users_stats),
+            'users_with_completions': sum(1 for user in users_stats if user['statistics']['total_completed_products'] > 0)
+        }
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsNormalUser])
+def get_user_products_by_min_orders(request):
+    """
+    Get products for the logged-in user based on their level's min_orders.
+    Returns products up to min_orders count (excluding already completed ones).
+    If user has completed some products, shows remaining products up to min_orders.
+    """
+    user = request.user
+    
+    if not user.level:
+        return Response({
+            'message': 'No level assigned. Please contact support.',
+            'min_orders': 0,
+            'total_products_available': 0,
+            'remaining_products': 0,
+            'completed_products': 0,
+            'products': []
+        }, status=status.HTTP_200_OK)
+    
+    min_orders = user.level.min_orders
+    
+    all_level_products = Product.objects.filter(
+        levels=user.level,
+        status='ACTIVE'
+    ).prefetch_related('reviews').distinct().order_by('position', '-created_at')
+    
+    completed_reviews = ProductReview.objects.filter(
+        user=user,
+        product__in=all_level_products,
+        status='COMPLETED'
+    ).values_list('product_id', flat=True)
+    
+    completed_count = len(completed_reviews)
+    remaining_orders = max(0, min_orders - completed_count)
+    
+    available_products = list(all_level_products.exclude(id__in=completed_reviews))[:remaining_orders]
+    
+    products_data = ProductSerializer(
+        available_products,
+        many=True,
+        context={'request': request, 'user': user}
+    ).data
+    
+    return Response({
+        'min_orders': min_orders,
+        'total_products_available': len(all_level_products),
+        'remaining_products': remaining_orders,
+        'completed_products': completed_count,
+        'products': products_data,
+        'product_count': len(products_data),
+        'level': {
+            'id': user.level.id,
+            'level_name': user.level.level_name,
+            'level_number': user.level.level,
+            'min_orders': user.level.min_orders,
+            'commission_rate': float(user.level.commission_rate)
+        },
+        'message': f'You can review {remaining_orders} more products out of {min_orders} required for your level.'
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAdminOrAgent])
+def get_user_products_for_admin(request, user_id):
+    """
+    Get min_orders for a specific user from their level.
+    Admin/Agent can use this to see the min_orders requirement for a user.
+    """
+    try:
+        target_user = User.objects.get(id=user_id, role='USER')
+    except User.DoesNotExist:
+        return Response({
+            'error': 'User not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    
+    if not request.user.is_admin:
+        if target_user.created_by != request.user:
+            return Response({
+                'error': 'You can only view min_orders for users created by you'
+            }, status=status.HTTP_403_FORBIDDEN)
+    
+    if not target_user.level:
+        return Response({
+            'user_id': target_user.id,
+            'username': target_user.username,
+            'min_orders': 0
+        }, status=status.HTTP_200_OK)
+    
+    min_orders = target_user.level.min_orders
+    
+    return Response({
+        'user_id': target_user.id,
+        'username': target_user.username,
+        'min_orders': min_orders
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAdminOrAgent])
+def get_user_completed_products_count(request, user_id):
+    """
+    Get the count of products a user has completed/reviewed.
+    Admin/Agent can use this to track user's product completion progress.
+    """
+    try:
+        target_user = User.objects.get(id=user_id, role='USER')
+    except User.DoesNotExist:
+        return Response({
+            'error': 'User not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    
+    if not request.user.is_admin:
+        if target_user.created_by != request.user:
+            return Response({
+                'error': 'You can only view completion count for users created by you'
+            }, status=status.HTTP_403_FORBIDDEN)
+    
+    if not target_user.level:
+        return Response({
+            'user_id': target_user.id,
+            'username': target_user.username,
+            'completed': 0,
+            'min_orders': 0
+        }, status=status.HTTP_200_OK)
+    
+    min_orders = target_user.level.min_orders
+    
+    all_level_products = Product.objects.filter(
+        levels=target_user.level,
+        status='ACTIVE'
+    ).distinct()
+    
+    completed_count = ProductReview.objects.filter(
+        user=target_user,
+        product__in=all_level_products,
+        status='COMPLETED'
+    ).count()
+    
+    return Response({
+        'user_id': target_user.id,
+        'username': target_user.username,
+        'completed': completed_count,
+        'min_orders': min_orders
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAdminOrAgent])
+def insert_product_at_position(request, product_id):
+    """
+    Insert a product at a specific position (for freeze concept).
+    Updates the product's position and adjusts other products' positions accordingly.
+    """
+    try:
+        product = Product.objects.get(id=product_id)
+    except Product.DoesNotExist:
+        return Response({
+            'error': 'Product not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    
+    position = request.data.get('position', None)
+    if position is None:
+        return Response({
+            'error': 'Position is required'
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    try:
+        position = int(position)
+        if position < 0:
+            return Response({
+                'error': 'Position must be a non-negative integer'
+            }, status=status.HTTP_400_BAD_REQUEST)
+    except (ValueError, TypeError):
+        return Response({
+            'error': 'Position must be a valid integer'
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    from django.db import transaction as db_transaction
+    
+    with db_transaction.atomic():
+        current_position = product.position
+        
+        if position == current_position:
+            return Response({
+                'message': 'Product is already at this position',
+                'product_id': product.id,
+                'product_title': product.title,
+                'position': position
+            }, status=status.HTTP_200_OK)
+        
+        if position < current_position:
+            Product.objects.exclude(id=product_id).filter(
+                position__gte=position,
+                position__lt=current_position
+            ).update(position=F('position') + 1)
+        else:
+            Product.objects.exclude(id=product_id).filter(
+                position__gt=current_position,
+                position__lte=position
+            ).update(position=F('position') - 1)
+        
+        product.position = position
+        product.save(update_fields=['position'])
+    
+    product_data = ProductSerializer(product, context={'request': request}).data
+    
+    return Response({
+        'message': f'Product moved to position {position} successfully',
+        'product': product_data
+    }, status=status.HTTP_200_OK)

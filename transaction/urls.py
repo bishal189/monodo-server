@@ -17,5 +17,6 @@ urlpatterns = [
     path('withdrawal-accounts/check/', views.check_withdrawal_account, name='check-withdrawal-account'),
     path('withdrawal-accounts/', views.withdrawal_accounts, name='withdrawal-accounts'),
     path('withdrawal-accounts/<int:account_id>/', views.withdrawal_account_detail, name='withdrawal-account-detail'),
+    path('crypto-networks/', views.get_crypto_networks, name='get-crypto-networks'),
 ]
 
