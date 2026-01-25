@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Product
+from .models import Product, ProductReview
 
 
 @admin.register(Product)
@@ -25,5 +25,35 @@ class ProductAdmin(admin.ModelAdmin):
         }),
         ('Additional Information', {
             'fields': ('created_at',)
+        }),
+    )
+
+
+@admin.register(ProductReview)
+class ProductReviewAdmin(admin.ModelAdmin):
+    list_display = [
+        'id',
+        'user',
+        'product',
+        'status',
+        'commission_earned',
+        'created_at',
+        'completed_at'
+    ]
+    list_filter = ['status', 'created_at', 'completed_at']
+    search_fields = ['user__username', 'user__email', 'product__title', 'review_text']
+    ordering = ['-created_at']
+    readonly_fields = ['created_at']
+    raw_id_fields = ['user', 'product']
+    
+    fieldsets = (
+        ('Review Information', {
+            'fields': ('user', 'product', 'review_text', 'status')
+        }),
+        ('Commission', {
+            'fields': ('commission_earned',)
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'completed_at')
         }),
     )

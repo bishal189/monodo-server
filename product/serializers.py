@@ -194,21 +194,14 @@ class SubmitProductReviewSerializer(serializers.Serializer):
         except Product.DoesNotExist:
             raise serializers.ValidationError("Product not found.")
         
-        # Check if product is active
         if product.status != 'ACTIVE':
             raise serializers.ValidationError("Cannot review inactive products.")
         
-        # Check if user has a level
         if not user.level:
             raise serializers.ValidationError("You must have a level assigned to review products.")
         
-        # Check if product is assigned to user's level
         if not product.levels.filter(id=user.level.id).exists():
             raise serializers.ValidationError("This product is not available for your level.")
-        
-        # Check if user has already reviewed this product
-        if ProductReview.objects.filter(user=user, product=product).exists():
-            raise serializers.ValidationError("You have already reviewed this product.")
         
         return attrs
 

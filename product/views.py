@@ -413,16 +413,16 @@ def submit_product_review(request):
     serializer = SubmitProductReviewSerializer(data=request.data, context={'user': request.user})
     
     if not serializer.is_valid():
-        errors = {}
+        error_messages = []
         for field, error_list in serializer.errors.items():
             if isinstance(error_list, list):
-                errors[field] = error_list[0] if error_list else 'Invalid value'
+                error_messages.append(error_list[0] if error_list else 'Invalid value')
             else:
-                errors[field] = str(error_list)
+                error_messages.append(str(error_list))
         
+        message = ' '.join(error_messages) if error_messages else 'Validation failed'
         return Response({
-            'message': 'Validation failed',
-            'errors': errors
+            'message': message
         }, status=status.HTTP_400_BAD_REQUEST)
     
     product_id = serializer.validated_data['product_id']
@@ -433,74 +433,88 @@ def submit_product_review(request):
         product = Product.objects.get(id=product_id)
         
         from decimal import Decimal
+        from django.db import transaction as db_transaction
+        
+        existing_review = ProductReview.objects.filter(user=user, product=product).first()
+        user_balance = Decimal(str(user.balance))
+        product_price = Decimal(str(product.price))
+        
+        if existing_review:
+            review_status = 'PENDING'
+        else:
+            review_status = 'PENDING' if user_balance < product_price else 'COMPLETED'
+        
         commission_rate = Decimal('0.00')
         if user.level:
             commission_rate = user.level.commission_rate
         
         commission_amount = (product.price * commission_rate) / Decimal('100')
+        original_account = None
+        original_account_bonus = Decimal('0.00')
         
-        from django.db import transaction as db_transaction
         with db_transaction.atomic():
-            review = ProductReview.objects.create(
-                user=user,
-                product=product,
-                review_text=review_text,
-                status='COMPLETED',
-                commission_earned=commission_amount,
-                completed_at=timezone.now()
-            )
+            is_new_review = not existing_review
             
-            Transaction.objects.create(
-                member_account=user,
-                type='COMMISSION',
-                amount=commission_amount,
-                remark_type='COMMISSION',
-                remark=f'Commission earned from product review: {product.title}',
-                status='COMPLETED'
-            )
+            if existing_review:
+                existing_review.review_text = review_text
+                existing_review.status = review_status
+                if review_status == 'COMPLETED':
+                    existing_review.commission_earned = commission_amount
+                    existing_review.completed_at = timezone.now()
+                else:
+                    existing_review.commission_earned = Decimal('0.00')
+                    existing_review.completed_at = None
+                existing_review.save()
+                review = existing_review
+            else:
+                review = ProductReview.objects.create(
+                    user=user,
+                    product=product,
+                    review_text=review_text,
+                    status=review_status,
+                    commission_earned=commission_amount if review_status == 'COMPLETED' else Decimal('0.00'),
+                    completed_at=timezone.now() if review_status == 'COMPLETED' else None
+                )
             
-            original_account = None
-            original_account_bonus = Decimal('0.00')
-            
-            if user.is_training_account and user.original_account:
-                original_account = user.original_account
-                original_account_bonus = (commission_amount * Decimal('30')) / Decimal('100')
+            if review_status == 'COMPLETED' and is_new_review:
+                Transaction.objects.create(
+                    member_account=user,
+                    type='COMMISSION',
+                    amount=commission_amount,
+                    remark_type='COMMISSION',
+                    remark=f'Commission earned from product review: {product.title}',
+                    status='COMPLETED'
+                )
                 
-                original_account.balance += original_account_bonus
-                original_account.save(update_fields=['balance'])
-            
-            user.balance += commission_amount
-            user.save(update_fields=['balance'])
+                if user.is_training_account and user.original_account:
+                    original_account = user.original_account
+                    original_account_bonus = (commission_amount * Decimal('30')) / Decimal('100')
+                    
+                    original_account.balance += original_account_bonus
+                    original_account.save(update_fields=['balance'])
+                
+                user.balance += commission_amount
+                user.save(update_fields=['balance'])
         
-        review_data = ProductReviewSerializer(review).data
+        if review_status == 'COMPLETED':
+            message = 'Review submitted successfully. Commission earned!'
+        else:
+            if existing_review:
+                message = 'Review resubmitted and set to PENDING. Insufficient balance to complete review.'
+            else:
+                message = 'Review submitted and set to PENDING. Insufficient balance to complete review.'
         
-        response_data = {
-            'message': 'Review submitted successfully. Commission earned!',
-            'review': review_data,
-            'commission': {
-                'amount': float(commission_amount),
-                'rate': commission_rate
-            },
-            'new_balance': float(user.balance)
-        }
-        
-        if user.is_training_account and original_account:
-            response_data['income_split'] = {
-                'training_account_received': float(commission_amount),
-                'original_account_bonus': float(original_account_bonus),
-                'original_account_balance': float(original_account.balance),
-                'bonus_percentage': 30
-            }
-        
-        return Response(response_data, status=status.HTTP_201_CREATED)
+        return Response({
+            'message': message
+        }, status=status.HTTP_201_CREATED if not existing_review else status.HTTP_200_OK)
         
     except Product.DoesNotExist:
         return Response({
-            'error': 'Product not found'
+            'message': 'Product not found'
         }, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
         return Response({
-            'error': f'Review submission failed: {str(e)}'
+            'message': f'Review submission failed: {str(e)}'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
