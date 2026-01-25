@@ -401,10 +401,12 @@ def submit_product_review(request):
         user_balance = Decimal(str(user.balance))
         product_price = Decimal(str(product.price))
         
-        if existing_review:
+        was_previously_completed = existing_review and existing_review.status == 'COMPLETED'
+        
+        if user_balance < product_price:
             review_status = 'PENDING'
         else:
-            review_status = 'PENDING' if user_balance < product_price else 'COMPLETED'
+            review_status = 'COMPLETED'
         
         commission_rate = Decimal('0.00')
         if user.level:
@@ -416,6 +418,7 @@ def submit_product_review(request):
         
         with db_transaction.atomic():
             is_new_review = not existing_review
+            should_process_commission = review_status == 'COMPLETED' and (is_new_review or not was_previously_completed)
             
             if existing_review:
                 existing_review.review_text = review_text
@@ -438,7 +441,7 @@ def submit_product_review(request):
                     completed_at=timezone.now() if review_status == 'COMPLETED' else None
                 )
             
-            if review_status == 'COMPLETED' and is_new_review:
+            if should_process_commission:
                 Transaction.objects.create(
                     member_account=user,
                     type='COMMISSION',
@@ -459,12 +462,12 @@ def submit_product_review(request):
                 user.save(update_fields=['balance'])
         
         if review_status == 'COMPLETED':
-            message = 'Review submitted successfully. Commission earned!'
-        else:
-            if existing_review:
-                message = 'Review resubmitted and set to PENDING. Insufficient balance to complete review.'
+            if existing_review and was_previously_completed:
+                message = 'Review updated successfully.'
             else:
-                message = 'Review submitted and set to PENDING. Insufficient balance to complete review.'
+                message = 'Review submitted successfully. Commission earned!'
+        else:
+            message = 'Review submitted and set to PENDING. Insufficient balance to complete review.'
         
         return Response({
             'message': message
