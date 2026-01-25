@@ -269,12 +269,11 @@ def product_dashboard(request):
     
     total_balance = float(user.balance)
     
-    today_commission = Transaction.objects.filter(
-        member_account=user,
-        type='COMMISSION',
+    today_commission = ProductReview.objects.filter(
+        user=user,
         status='COMPLETED',
-        created_at__gte=today_start
-    ).aggregate(total=Sum('amount'))['total'] or 0.00
+        completed_at__gte=today_start
+    ).aggregate(total=Sum('commission_earned'))['total'] or 0.00
     today_commission = float(today_commission)
     
     if user.level:
@@ -299,8 +298,8 @@ def product_dashboard(request):
         available_products = Product.objects.none()
         entitlements_count = 0
     
-    completed_transactions = Transaction.objects.filter(
-        member_account=user,
+    completed_count = ProductReview.objects.filter(
+        user=user,
         status='COMPLETED'
     ).count()
     
@@ -324,7 +323,7 @@ def product_dashboard(request):
             'total_balance': total_balance,
             'todays_commission': today_commission,
             'entitlements': entitlements_count,
-            'completed': completed_transactions,
+            'completed': completed_count,
             'required_amount': required_amount
         },
         'level': level_data,
@@ -442,15 +441,6 @@ def submit_product_review(request):
                 )
             
             if should_process_commission:
-                Transaction.objects.create(
-                    member_account=user,
-                    type='COMMISSION',
-                    amount=commission_amount,
-                    remark_type='COMMISSION',
-                    remark=f'Commission earned from product review: {product.title}',
-                    status='COMPLETED'
-                )
-                
                 if user.is_training_account and user.original_account:
                     original_account = user.original_account
                     original_account_bonus = (commission_amount * Decimal('30')) / Decimal('100')
@@ -461,6 +451,21 @@ def submit_product_review(request):
                 user.balance += commission_amount
                 user.save(update_fields=['balance'])
         
+        today = timezone.now().date()
+        today_start = timezone.make_aware(datetime.combine(today, datetime.min.time()))
+        
+        today_commission = ProductReview.objects.filter(
+            user=user,
+            status='COMPLETED',
+            completed_at__gte=today_start
+        ).aggregate(total=Sum('commission_earned'))['total'] or Decimal('0.00')
+        today_commission = float(today_commission)
+        
+        completed_count = ProductReview.objects.filter(
+            user=user,
+            status='COMPLETED'
+        ).count()
+        
         if review_status == 'COMPLETED':
             if existing_review and was_previously_completed:
                 message = 'Review updated successfully.'
@@ -469,9 +474,13 @@ def submit_product_review(request):
         else:
             message = 'Review submitted and set to PENDING. Insufficient balance to complete review.'
         
-        return Response({
-            'message': message
-        }, status=status.HTTP_201_CREATED if not existing_review else status.HTTP_200_OK)
+        response_data = {
+            'message': message,
+            'todays_commission': today_commission,
+            'completed': completed_count
+        }
+        
+        return Response(response_data, status=status.HTTP_201_CREATED if not existing_review else status.HTTP_200_OK)
         
     except Product.DoesNotExist:
         return Response({
