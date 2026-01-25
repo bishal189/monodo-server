@@ -149,6 +149,8 @@ class AssignProductsToLevelSerializer(serializers.Serializer):
 class ProductReviewSerializer(serializers.ModelSerializer):
     product_title = serializers.CharField(source='product.title', read_only=True)
     product_price = serializers.DecimalField(source='product.price', max_digits=10, decimal_places=2, read_only=True)
+    product_image = serializers.ImageField(source='product.image', read_only=True)
+    product_image_url = serializers.SerializerMethodField()
     username = serializers.CharField(source='user.username', read_only=True)
     user_email = serializers.EmailField(source='user.email', read_only=True)
     
@@ -162,6 +164,8 @@ class ProductReviewSerializer(serializers.ModelSerializer):
             'product',
             'product_title',
             'product_price',
+            'product_image',
+            'product_image_url',
             'review_text',
             'status',
             'commission_earned',
@@ -169,6 +173,15 @@ class ProductReviewSerializer(serializers.ModelSerializer):
             'completed_at'
         ]
         read_only_fields = ['id', 'status', 'commission_earned', 'created_at', 'completed_at']
+    
+    def get_product_image_url(self, obj):
+        """Return full URL for the product image"""
+        if obj.product and obj.product.image:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.product.image.url)
+            return obj.product.image.url
+        return None
 
 
 class SubmitProductReviewSerializer(serializers.Serializer):

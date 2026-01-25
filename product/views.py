@@ -338,72 +338,34 @@ def product_dashboard(request):
 @permission_classes([IsNormalUser])
 def get_products_by_review_status(request):
     """
-    Get products filtered by review status (PENDING or COMPLETED) for the logged-in user.
-    GET: Retrieve products with pending or completed reviews
-    Query params: review_status (PENDING, COMPLETED, or NOT_COMPLETED)
+    Get reviews (PENDING or COMPLETED) for the logged-in user.
+    GET: Retrieve user's reviews filtered by status
+    Query params: review_status (PENDING or COMPLETED)
     """
     user = request.user
     review_status = request.query_params.get('review_status', None)
     
-    if not user.level:
-        return Response({
-            'products': [],
-            'count': 0,
-            'message': 'No level assigned. No products available.'
-        }, status=status.HTTP_200_OK)
-    
-    available_products = Product.objects.filter(
-        levels=user.level,
-        status='ACTIVE'
-    ).prefetch_related('reviews').distinct()
+    reviews = ProductReview.objects.filter(user=user).select_related('product', 'user')
     
     if review_status:
         review_status = review_status.upper()
         
         if review_status == 'COMPLETED':
-            completed_review_ids = ProductReview.objects.filter(
-                user=user,
-                status='COMPLETED'
-            ).values_list('product_id', flat=True)
-            available_products = available_products.filter(id__in=completed_review_ids)
-        
+            reviews = reviews.filter(status='COMPLETED')
         elif review_status == 'PENDING':
-            pending_review_ids = ProductReview.objects.filter(
-                user=user,
-                status='PENDING'
-            ).values_list('product_id', flat=True)
-            available_products = available_products.filter(id__in=pending_review_ids)
-        
-        elif review_status == 'NOT_COMPLETED':
-            reviewed_product_ids = ProductReview.objects.filter(
-                user=user
-            ).values_list('product_id', flat=True)
-            available_products = available_products.exclude(id__in=reviewed_product_ids)
-        
+            reviews = reviews.filter(status='PENDING')
         else:
             return Response({
-                'error': 'Invalid review_status. Use: PENDING, COMPLETED, or NOT_COMPLETED'
+                'message': 'Invalid review_status. Use: PENDING or COMPLETED'
             }, status=status.HTTP_400_BAD_REQUEST)
     
-    products_data = ProductSerializer(
-        available_products,
-        many=True,
-        context={'request': request, 'user': user}
-    ).data
-    
-    level_data = None
-    commission_rate = 0.00
-    if user.level:
-        from level.serializers import LevelSerializer
-        level_data = LevelSerializer(user.level).data
-        commission_rate = float(user.level.commission_rate)
+    reviews = reviews.order_by('-created_at')
+    reviews_data = ProductReviewSerializer(reviews, many=True, context={'request': request}).data
     
     return Response({
-        'review_status': review_status or 'ALL',
-        'level': level_data,
-        'commission_rate': commission_rate,
-        'products': products_data,
-        'count': len(products_data)
+        'reviews': reviews_data,
+        'count': len(reviews_data),
+        'review_status': review_status or 'ALL'
     }, status=status.HTTP_200_OK)
 
 
