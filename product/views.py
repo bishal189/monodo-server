@@ -53,7 +53,12 @@ class ProductListView(generics.ListCreateAPIView):
             except ValueError:
                 pass
         
-        return queryset.order_by('position', '-created_at')
+        order_by = self.request.query_params.get('order_by', 'id')
+        if order_by == 'position':
+            queryset = queryset.order_by('position', '-created_at')
+        else:
+            queryset = queryset.order_by('id')
+        return queryset
     
     def get_serializer_class(self):
         if self.request.method == 'POST':
@@ -88,10 +93,26 @@ class ProductListView(generics.ListCreateAPIView):
     
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
-        serializer = self.get_serializer(queryset, many=True)
+        total_count = queryset.count()
+        try:
+            limit = int(request.query_params.get('limit', 10))
+            limit = max(1, min(limit, 100))
+        except (ValueError, TypeError):
+            limit = 10
+        try:
+            offset = int(request.query_params.get('offset', 0))
+            offset = max(0, offset)
+        except (ValueError, TypeError):
+            offset = 0
+        page = queryset[offset:offset + limit]
+        serializer = self.get_serializer(page, many=True)
         return Response({
             'products': serializer.data,
-            'count': queryset.count()
+            'count': total_count,
+            'limit': limit,
+            'offset': offset,
+            'has_more': (offset + limit) < total_count,
+            'next_offset': offset + limit if (offset + limit) < total_count else None
         }, status=status.HTTP_200_OK)
 
 
@@ -843,6 +864,119 @@ def get_user_completed_products_count(request, user_id):
         'username': target_user.username,
         'completed': completed_count,
         'min_orders': min_orders
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsNormalUser])
+def current_user_level_journey_completed(request):
+    """
+    Client API: Check if the logged-in user has completed their level journey.
+    Returns only user_id and completed (true/false).
+    """
+    target_user = request.user
+    if not target_user.level:
+        return Response({
+            'user_id': target_user.id,
+            'completed': False
+        }, status=status.HTTP_200_OK)
+
+    level = target_user.level
+    level_products = Product.objects.filter(
+        levels=level,
+        status='ACTIVE'
+    ).distinct().order_by('position', '-created_at')
+
+    total_items = level_products.count()
+    if total_items == 0:
+        return Response({
+            'user_id': target_user.id,
+            'completed': False
+        }, status=status.HTTP_200_OK)
+
+    completed_count = ProductReview.objects.filter(
+        user=target_user,
+        product__in=level_products,
+        status='COMPLETED'
+    ).count()
+
+    journey_completed = completed_count >= total_items
+
+    return Response({
+        'user_id': target_user.id,
+        'completed': journey_completed
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAdminOrAgent])
+def user_level_journey_completed(request, user_id):
+    """
+    Check if a user has completed the full level journey.
+    Journey = all products in the user's level (ordered by position).
+    Returns true only if the user has completed (COMPLETED review) every item in that journey.
+    Access: Admin can check any USER; Agent can check only users they created.
+    """
+    try:
+        target_user = User.objects.get(id=user_id, role='USER')
+    except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if not request.user.is_admin and target_user.created_by != request.user:
+        return Response({
+            'error': 'You can only check level journey for users created by you'
+        }, status=status.HTTP_403_FORBIDDEN)
+
+    if not target_user.level:
+        return Response({
+            'user_id': target_user.id,
+            'username': target_user.username,
+            'level_id': None,
+            'level_name': None,
+            'total_items': 0,
+            'completed_count': 0,
+            'completed': False,
+            'message': 'User has no level assigned.'
+        }, status=status.HTTP_200_OK)
+
+    level = target_user.level
+    level_products = Product.objects.filter(
+        levels=level,
+        status='ACTIVE'
+    ).distinct().order_by('position', '-created_at')
+
+    total_items = level_products.count()
+    if total_items == 0:
+        return Response({
+            'user_id': target_user.id,
+            'username': target_user.username,
+            'level_id': level.id,
+            'level_name': level.level_name,
+            'level_number': level.level,
+            'total_items': 0,
+            'completed_count': 0,
+            'completed': False,
+            'message': 'Level has no products in the journey.'
+        }, status=status.HTTP_200_OK)
+
+    completed_count = ProductReview.objects.filter(
+        user=target_user,
+        product__in=level_products,
+        status='COMPLETED'
+    ).count()
+
+    journey_completed = completed_count >= total_items
+
+    return Response({
+        'user_id': target_user.id,
+        'username': target_user.username,
+        'level_id': level.id,
+        'level_name': level.level_name,
+        'level_number': level.level,
+        'total_items': total_items,
+        'completed_count': completed_count,
+        'completed': journey_completed,
+        'message': 'Level journey completed.' if journey_completed else 'Level journey not yet completed.'
     }, status=status.HTTP_200_OK)
 
 
