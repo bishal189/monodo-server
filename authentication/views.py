@@ -99,6 +99,7 @@ from .serializers import (
     UserLoginSerializer,
     UserProfileSerializer,
     UserUpdateSerializer,
+    AdminAgentEditUserSerializer,
     AgentCreateSerializer,
     TrainingAccountCreateSerializer,
     AgentProfileUpdateSerializer
@@ -622,6 +623,52 @@ def agent_deactivate_user(request, user_id):
         }, status=status.HTTP_200_OK)
     except User.DoesNotExist:
         return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+
+@api_view(['GET', 'PATCH', 'PUT'])
+@permission_classes([IsAdminOrAgent])
+def edit_user(request, user_id):
+    """
+    Get or update a user. Allowed for admin and agent.
+    Admin can edit any USER-role user. Agent can only edit users they created.
+    """
+    try:
+        target_user = User.objects.get(id=user_id, role='USER')
+    except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if not request.user.is_admin and target_user.created_by != request.user:
+        return Response({
+            'error': 'You can only edit users created by you'
+        }, status=status.HTTP_403_FORBIDDEN)
+
+    if request.method == 'GET':
+        return Response({
+            'user': UserProfileSerializer(target_user).data
+        }, status=status.HTTP_200_OK)
+
+    # PATCH or PUT
+    partial = request.method == 'PATCH'
+    serializer = AdminAgentEditUserSerializer(target_user, data=request.data, partial=partial)
+    if not serializer.is_valid():
+        errors = {}
+        for field, error_list in serializer.errors.items():
+            if isinstance(error_list, list):
+                errors[field] = error_list[0] if len(error_list) == 1 else error_list
+            else:
+                errors[field] = str(error_list)
+        return Response({
+            'success': False,
+            'message': 'Validation failed',
+            'errors': errors
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    updated_user = serializer.save()
+    return Response({
+        'success': True,
+        'message': 'User updated successfully',
+        'user': UserProfileSerializer(updated_user).data
+    }, status=status.HTTP_200_OK)
 
 
 @api_view(['GET'])

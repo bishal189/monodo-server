@@ -13,12 +13,16 @@ urlpatterns = [
     path('check-role/', views.check_user_role_view, name='check-role'),
     path('invite/', views.get_invitation_code, name='get-invitation-code'),
 
+    # Edit user - same API for both admin and agent (IsAdminOrAgent)
+    path('users/<int:user_id>/edit/', views.edit_user, name='edit-user'),
+
     path('admin/users/', views.AdminUserListView.as_view(), name='admin-users-list'),
     path('admin/users/<int:id>/', views.AdminUserDetailView.as_view(), name='admin-user-detail'),
     path('admin/users/<int:user_id>/change-role/', views.admin_change_user_role, name='admin-change-role'),
     path('admin/dashboard/stats/', views.admin_dashboard_stats, name='admin-dashboard-stats'),
     path('admin/users/<int:user_id>/activate/', views.admin_activate_user, name='admin-activate-user'),
     path('admin/users/<int:user_id>/deactivate/', views.admin_deactivate_user, name='admin-deactivate-user'),
+    path('admin/users/<int:user_id>/edit/', views.edit_user, name='admin-edit-user'),
     path('admin/agents/', views.admin_created_agents_list, name='admin-created-agents-list'),
     path('admin/agents/create/', views.AgentCreateView.as_view(), name='admin-create-agent'),
     path('admin/agents/users/', views.admin_all_agent_created_users, name='admin-all-agent-created-users'),
@@ -31,6 +35,7 @@ urlpatterns = [
     path('agent/users/create/', views.agent_create_user, name='agent-create-user'),
     path('agent/users/<int:user_id>/activate/', views.agent_activate_user, name='agent-activate-user'),
     path('agent/users/<int:user_id>/deactivate/', views.agent_deactivate_user, name='agent-deactivate-user'),
+    path('agent/users/<int:user_id>/edit/', views.edit_user, name='agent-edit-user'),
     
     # Training Account endpoints
     path('agent/training-accounts/create/', views.create_training_account, name='create-training-account'),

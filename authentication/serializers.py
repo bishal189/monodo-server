@@ -314,6 +314,64 @@ class AgentCreateSerializer(serializers.ModelSerializer):
         return user
 
 
+class AdminAgentEditUserSerializer(serializers.ModelSerializer):
+    """Serializer for admin/agent to edit a user: username, email, phone, optional password change."""
+    new_password = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    confirm_new_password = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    
+    class Meta:
+        model = User
+        fields = ['username', 'email', 'phone_number', 'new_password', 'confirm_new_password']
+    
+    def validate_email(self, value):
+        user = self.instance
+        if User.objects.filter(email=value).exclude(pk=user.pk).exists():
+            raise serializers.ValidationError("A user with this email already exists.")
+        return value
+    
+    def validate_username(self, value):
+        user = self.instance
+        if User.objects.filter(username=value).exclude(pk=user.pk).exists():
+            raise serializers.ValidationError("A user with this username already exists.")
+        return value
+    
+    def validate_phone_number(self, value):
+        user = self.instance
+        if User.objects.filter(phone_number=value).exclude(pk=user.pk).exists():
+            raise serializers.ValidationError("A user with this phone number already exists.")
+        return value
+    
+    def validate(self, attrs):
+        new_password = attrs.get('new_password', '')
+        confirm_new_password = attrs.get('confirm_new_password', '')
+        if new_password or confirm_new_password:
+            if new_password != confirm_new_password:
+                raise serializers.ValidationError({
+                    'confirm_new_password': "New passwords do not match."
+                })
+            if new_password:
+                try:
+                    validate_password(new_password)
+                except Exception as e:
+                    raise serializers.ValidationError({
+                        'new_password': list(e.messages)
+                    })
+        return attrs
+    
+    def update(self, instance, validated_data):
+        validated_data.pop('confirm_new_password', None)
+        new_password = validated_data.pop('new_password', None)
+        
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        
+        if new_password and len(new_password) > 0:
+            instance.set_password(new_password)
+        
+        instance.save()
+        return instance
+
+
 class AgentProfileUpdateSerializer(serializers.ModelSerializer):
     login_password = serializers.CharField(write_only=True, required=False, allow_blank=True)
     
