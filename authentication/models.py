@@ -78,6 +78,18 @@ class User(AbstractBaseUser, PermissionsMixin):
         default=10.00,
         help_text="User account balance (default $10 for new registrations and training accounts)"
     )
+    balance_frozen = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="True when balance was insufficient to complete a review (frozen until balance is credited or review completed)"
+    )
+    balance_frozen_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Shortfall when frozen (product price minus balance); shown when balance_frozen is True"
+    )
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     is_superuser = models.BooleanField(default=False)

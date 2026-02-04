@@ -189,11 +189,13 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'original_account_username',
             'is_training_account',
             'balance',
+            'balance_frozen',
+            'balance_frozen_amount',
             'date_joined',
             'last_login',
             'is_active'
         ]
-        read_only_fields = ['id', 'date_joined', 'last_login', 'role', 'created_by', 'balance']
+        read_only_fields = ['id', 'date_joined', 'last_login', 'role', 'created_by', 'balance', 'balance_frozen', 'balance_frozen_amount']
     
     def get_level(self, obj):
         """Return level information if user has a level assigned"""

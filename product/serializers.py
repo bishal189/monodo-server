@@ -23,6 +23,7 @@ class ProductSerializer(serializers.ModelSerializer):
             'effective_price',
             'status',
             'position',
+            'use_actual_price',
             'review_status',
             'potential_commission',
             'commission_amount',
@@ -52,7 +53,9 @@ class ProductSerializer(serializers.ModelSerializer):
         return 'NOT_COMPLETED'
     
     def _get_effective_price(self, obj):
-        """Price for this user: agreed_price if set on review, else product price."""
+        """Price for this user: use actual price if product.use_actual_price (e.g. inserted at position), else agreed_price or product price."""
+        if getattr(obj, 'use_actual_price', False):
+            return obj.price
         user = self.context.get('user')
         if not user or not user.is_authenticated:
             return obj.price
@@ -228,12 +231,9 @@ class SubmitProductReviewSerializer(serializers.Serializer):
         
         if product.status != 'ACTIVE':
             raise serializers.ValidationError("Cannot review inactive products.")
-        
+
         if not user.level:
             raise serializers.ValidationError("You must have a level assigned to review products.")
-        
-        if not product.levels.filter(id=user.level.id).exists():
-            raise serializers.ValidationError("This product is not available for your level.")
-        
+
         return attrs
 

@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from rest_framework import status, generics, permissions
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
@@ -300,18 +302,32 @@ def approve_transaction(request, transaction_id):
             transaction.save(update_fields=['status'])
             
             if not is_already_completed:
+                update_fields = ['balance']
                 if transaction.type == 'DEPOSIT':
-                    user.balance += transaction.amount
+                    print(f"Deposit amount: {transaction.amount}")
+                    deposit_amount = Decimal(str(transaction.amount))
+                    user.balance = Decimal(str(user.balance)) + deposit_amount
+                    print(f"User balance: {user.balance}")
+                    if user.balance_frozen and user.balance_frozen_amount is not None:
+                        frozen_amount = Decimal(str(user.balance_frozen_amount))
+                        print(f"Frozen amount: {frozen_amount}")
+                        user.balance += frozen_amount
+                        print(f"User balance after adding frozen amount: {user.balance}")
+                        user.balance_frozen = False
+                        user.balance_frozen_amount = None
+                        update_fields.extend(['balance_frozen', 'balance_frozen_amount'])
                 elif transaction.type == 'WITHDRAWAL':
-                    if user.balance < transaction.amount:
+                    withdraw_amount = Decimal(str(transaction.amount))
+                    current_balance = Decimal(str(user.balance))
+                    if current_balance < withdraw_amount:
                         transaction.status = 'FAILED'
                         transaction.save(update_fields=['status'])
                         return Response({
                             'error': 'Insufficient balance. Transaction marked as failed.'
                         }, status=status.HTTP_400_BAD_REQUEST)
-                    user.balance -= transaction.amount
+                    user.balance = current_balance - withdraw_amount
                 
-                user.save(update_fields=['balance'])
+                user.save(update_fields=update_fields)
         
         return Response({
             'message': 'Transaction approved successfully',
@@ -458,7 +474,10 @@ def add_balance(request):
         with db_transaction.atomic():
             old_balance = member_account.balance
             member_account.balance += balance_change
-            member_account.save(update_fields=['balance'])
+            if balance_change > 0:
+                member_account.balance_frozen = False
+                member_account.balance_frozen_amount = None
+            member_account.save(update_fields=['balance', 'balance_frozen', 'balance_frozen_amount'] if balance_change > 0 else ['balance'])
         
         return Response({
             'message': f'Balance {balance_type.lower()}ed successfully',

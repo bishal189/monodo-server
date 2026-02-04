@@ -283,50 +283,53 @@ def get_products_by_level(request, level_id):
 @api_view(['GET'])
 @permission_classes([IsNormalUser])
 def product_dashboard(request):
-    """
-    Get product dashboard overview with stats and products based on user's level.
-    Returns: Total Balance, Today's Commission, Entitlements, Completed, and Products
-    """
+    """Dashboard: balance, today's commission, entitlements, completed count, and paginated products (first min_orders by position)."""
     user = request.user
     today = timezone.now().date()
     today_start = timezone.make_aware(datetime.combine(today, datetime.min.time()))
-    
+
+    try:
+        limit = max(1, min(int(request.query_params.get('limit', 1)), 50))
+    except (TypeError, ValueError):
+        limit = 1
+    try:
+        offset = max(0, int(request.query_params.get('offset', 0)))
+    except (TypeError, ValueError):
+        offset = 0
+
     total_balance = float(user.balance)
-    
     today_commission = ProductReview.objects.filter(
         user=user,
         status='COMPLETED',
         completed_at__gte=today_start
     ).aggregate(total=Sum('commission_earned'))['total'] or 0.00
     today_commission = float(today_commission)
-    
+
+    pool_products = []
     if user.level:
-        all_level_products = Product.objects.filter(
-            levels=user.level,
-            status='ACTIVE'
-        ).prefetch_related('reviews').distinct().order_by('position', '-created_at')
-        
-        entitlements_count = user.level.min_orders
-        
-        completed_reviews = ProductReview.objects.filter(
+        level = user.level
+        min_orders = int(level.min_orders or 0)
+        all_products_qs = Product.objects.filter(status='ACTIVE').prefetch_related('reviews').order_by('position', '-created_at')
+        pool_products = list(all_products_qs[:min_orders])
+        entitlements_count = min_orders
+
+        pool_product_ids = [p.id for p in pool_products]
+        completed_reviews = set(ProductReview.objects.filter(
             user=user,
-            product__in=all_level_products,
+            product_id__in=pool_product_ids,
             status='COMPLETED'
-        ).values_list('product_id', flat=True)
-        
-        remaining_orders = max(0, entitlements_count - len(completed_reviews))
-        
-        available_products_queryset = all_level_products.exclude(id__in=completed_reviews).order_by('position', '-created_at')
-        available_products = list(available_products_queryset[:remaining_orders])
-        # Assign agreed_price (min-max% of balance from level) for the next product when user opens dashboard
-        if available_products:
-            first_product = available_products[0]
+        ).values_list('product_id', flat=True))
+        completed_in_pool = len(completed_reviews)
+
+        next_to_do = [p for p in pool_products if p.id not in completed_reviews]
+        if next_to_do:
+            first_product = next_to_do[0]
             review, _ = ProductReview.objects.get_or_create(
                 user=user,
                 product=first_product,
                 defaults={'status': 'PENDING'}
             )
-            if review.agreed_price is None:
+            if review.agreed_price is None and not first_product.use_actual_price:
                 balance_val = float(user.balance)
                 min_pct = 30.0
                 max_pct = 70.0
@@ -343,13 +346,22 @@ def product_dashboard(request):
                 review.agreed_price = Decimal(str(agreed_val))
                 review.save(update_fields=['agreed_price'])
     else:
-        available_products = Product.objects.none()
         entitlements_count = 0
-    
-    completed_count = ProductReview.objects.filter(
-        user=user,
-        status='COMPLETED'
-    ).count()
+        next_to_do = []
+        completed_in_pool = 0
+
+    total_products = len(next_to_do)
+    available_products = next_to_do[offset:offset + limit]
+    has_more = (offset + limit) < total_products
+    next_offset = (offset + limit) if has_more else None
+
+    if user.level:
+        completed_count = completed_in_pool
+    else:
+        completed_count = ProductReview.objects.filter(
+            user=user,
+            status='COMPLETED'
+        ).count()
     
     products_data = ProductSerializer(
         available_products, 
@@ -372,12 +384,23 @@ def product_dashboard(request):
             'todays_commission': today_commission,
             'entitlements': entitlements_count,
             'completed': completed_count,
-            'required_amount': required_amount
+            'required_amount': required_amount,
+            'balance_frozen': user.balance_frozen,
+            'balance_frozen_amount': float(user.balance_frozen_amount) if user.balance_frozen_amount is not None else None
         },
         'level': level_data,
         'commission_rate': commission_rate,
         'products': products_data,
-        'product_count': len(products_data)
+        'product_count': len(products_data),
+        'pagination': {
+            'total_products': total_products,
+            'pool_size': len(pool_products),
+            'entitlements_cap': entitlements_count,
+            'limit': limit,
+            'offset': offset,
+            'has_more': has_more,
+            'next_offset': next_offset
+        }
     }, status=status.HTTP_200_OK)
 
 
@@ -446,8 +469,10 @@ def submit_product_review(request):
         
         existing_review = ProductReview.objects.filter(user=user, product=product).first()
         user_balance = Decimal(str(user.balance))
-        # Use agreed_price (30-70% of balance when assigned) if set, else product price
-        if existing_review and existing_review.agreed_price is not None:
+        # Use actual price when product.use_actual_price (e.g. inserted at position); else agreed_price or product price
+        if product.use_actual_price:
+            product_price = Decimal(str(product.price))
+        elif existing_review and existing_review.agreed_price is not None:
             product_price = existing_review.agreed_price
         else:
             product_price = Decimal(str(product.price))
@@ -501,7 +526,13 @@ def submit_product_review(request):
                     original_account.save(update_fields=['balance'])
                 
                 user.balance += commission_amount
-                user.save(update_fields=['balance'])
+                user.balance_frozen = False
+                user.balance_frozen_amount = None
+                user.save(update_fields=['balance', 'balance_frozen', 'balance_frozen_amount'])
+            elif review_status == 'PENDING':
+                user.balance_frozen = True
+                user.balance_frozen_amount = product_price - user_balance
+                user.save(update_fields=['balance_frozen', 'balance_frozen_amount'])
         
         today = timezone.now().date()
         today_start = timezone.make_aware(datetime.combine(today, datetime.min.time()))
@@ -1067,7 +1098,8 @@ def insert_product_at_position(request, product_id):
             ).update(position=F('position') - 1)
         
         product.position = position
-        product.save(update_fields=['position'])
+        product.use_actual_price = True
+        product.save(update_fields=['position', 'use_actual_price'])
     
     product_data = ProductSerializer(product, context={'request': request}).data
     

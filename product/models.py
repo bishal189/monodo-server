@@ -36,6 +36,11 @@ class Product(models.Model):
         db_index=True,
         help_text="Display position/order for the product (lower number = higher position)"
     )
+    use_actual_price = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="If True, always use product price (no 30-70%% agreed price). Set when inserted at position from frontend."
+    )
     created_at = models.DateTimeField(default=timezone.now, db_index=True)
     
     class Meta:

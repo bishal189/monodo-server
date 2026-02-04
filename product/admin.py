@@ -26,7 +26,7 @@ class ProductAdmin(admin.ModelAdmin):
             'fields': ('price',)
         }),
         ('Ordering', {
-            'fields': ('position',)
+            'fields': ('position', 'use_actual_price')
         }),
         ('Additional Information', {
             'fields': ('created_at',)
