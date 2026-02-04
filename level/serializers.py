@@ -13,6 +13,8 @@ class LevelSerializer(serializers.ModelSerializer):
             'required_points',
             'commission_rate',
             'min_orders',
+            'price_min_percent',
+            'price_max_percent',
             'benefits',
             'status',
             'created_at'
@@ -49,6 +51,28 @@ class LevelSerializer(serializers.ModelSerializer):
         if value < 0:
             raise serializers.ValidationError("Minimum orders must be non-negative.")
         return value
+    
+    def validate_price_min_percent(self, value):
+        """Ensure price min percent is between 0 and 100"""
+        if value is not None and (value < 0 or value > 100):
+            raise serializers.ValidationError("Price min percent must be between 0 and 100.")
+        return value
+    
+    def validate_price_max_percent(self, value):
+        """Ensure price max percent is between 0 and 100"""
+        if value is not None and (value < 0 or value > 100):
+            raise serializers.ValidationError("Price max percent must be between 0 and 100.")
+        return value
+    
+    def validate(self, attrs):
+        """Ensure price_min_percent <= price_max_percent"""
+        min_pct = attrs.get('price_min_percent', getattr(self.instance, 'price_min_percent', None))
+        max_pct = attrs.get('price_max_percent', getattr(self.instance, 'price_max_percent', None))
+        if min_pct is not None and max_pct is not None and min_pct > max_pct:
+            raise serializers.ValidationError({
+                'price_max_percent': "Price max percent must be >= price min percent."
+            })
+        return attrs
 
 
 class LevelCreateSerializer(LevelSerializer):
@@ -63,6 +87,8 @@ class LevelUpdateSerializer(LevelSerializer):
     required_points = serializers.IntegerField(required=False)
     commission_rate = serializers.DecimalField(max_digits=5, decimal_places=2, required=False)
     min_orders = serializers.IntegerField(required=False)
+    price_min_percent = serializers.DecimalField(max_digits=5, decimal_places=2, required=False)
+    price_max_percent = serializers.DecimalField(max_digits=5, decimal_places=2, required=False)
     benefits = serializers.CharField(required=False, allow_blank=True)
     status = serializers.ChoiceField(choices=Level.STATUS_CHOICES, required=False)
 

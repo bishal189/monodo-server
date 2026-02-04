@@ -26,6 +26,9 @@ class LevelAdmin(admin.ModelAdmin):
         ('Requirements', {
             'fields': ('required_points', 'min_orders', 'commission_rate')
         }),
+        ('Price Range (% of balance for next product)', {
+            'fields': ('price_min_percent', 'price_max_percent')
+        }),
         ('Additional Information', {
             'fields': ('benefits', 'created_at')
         }),

@@ -41,6 +41,7 @@ class ProductReviewAdmin(admin.ModelAdmin):
         'user',
         'product',
         'status',
+        'agreed_price',
         'commission_earned',
         'created_at',
         'completed_at'
@@ -56,7 +57,7 @@ class ProductReviewAdmin(admin.ModelAdmin):
             'fields': ('user', 'product', 'review_text', 'status')
         }),
         ('Commission', {
-            'fields': ('commission_earned',)
+            'fields': ('agreed_price', 'commission_earned')
         }),
         ('Timestamps', {
             'fields': ('created_at', 'completed_at')

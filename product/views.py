@@ -1,3 +1,6 @@
+import random
+from decimal import Decimal
+
 from rest_framework import status, generics, permissions
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
@@ -315,6 +318,30 @@ def product_dashboard(request):
         
         available_products_queryset = all_level_products.exclude(id__in=completed_reviews).order_by('position', '-created_at')
         available_products = list(available_products_queryset[:remaining_orders])
+        # Assign agreed_price (min-max% of balance from level) for the next product when user opens dashboard
+        if available_products:
+            first_product = available_products[0]
+            review, _ = ProductReview.objects.get_or_create(
+                user=user,
+                product=first_product,
+                defaults={'status': 'PENDING'}
+            )
+            if review.agreed_price is None:
+                balance_val = float(user.balance)
+                min_pct = 30.0
+                max_pct = 70.0
+                if user.level:
+                    min_pct = float(user.level.price_min_percent or 30)
+                    max_pct = float(user.level.price_max_percent or 70)
+                if balance_val > 0:
+                    low = (min_pct / 100) * balance_val
+                    high = (max_pct / 100) * balance_val
+                    agreed_val = round(random.uniform(low, high), 2)
+                    agreed_val = max(0.01, agreed_val)
+                else:
+                    agreed_val = 0.01
+                review.agreed_price = Decimal(str(agreed_val))
+                review.save(update_fields=['agreed_price'])
     else:
         available_products = Product.objects.none()
         entitlements_count = 0
@@ -419,7 +446,11 @@ def submit_product_review(request):
         
         existing_review = ProductReview.objects.filter(user=user, product=product).first()
         user_balance = Decimal(str(user.balance))
-        product_price = Decimal(str(product.price))
+        # Use agreed_price (30-70% of balance when assigned) if set, else product price
+        if existing_review and existing_review.agreed_price is not None:
+            product_price = existing_review.agreed_price
+        else:
+            product_price = Decimal(str(product.price))
         
         was_previously_completed = existing_review and existing_review.status == 'COMPLETED'
         
@@ -432,7 +463,7 @@ def submit_product_review(request):
         if user.level:
             commission_rate = user.level.commission_rate
         
-        commission_amount = (product.price * commission_rate) / Decimal('100')
+        commission_amount = (product_price * commission_rate) / Decimal('100')
         original_account = None
         original_account_bonus = Decimal('0.00')
         

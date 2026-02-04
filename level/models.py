@@ -18,6 +18,18 @@ class Level(models.Model):
         help_text="Commission rate as percentage (e.g., 5.50 for 5.5%)"
     )
     min_orders = models.IntegerField(default=0, help_text="Minimum number of orders required")
+    price_min_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=30.00,
+        help_text="Min % of balance for next product price (e.g. 30 for 30%%)"
+    )
+    price_max_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=70.00,
+        help_text="Max % of balance for next product price (e.g. 70 for 70%%)"
+    )
     benefits = models.TextField(blank=True, null=True, help_text="Benefits description for this level")
     status = models.CharField(
         max_length=10, 

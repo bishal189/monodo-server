@@ -82,6 +82,13 @@ class ProductReview(models.Model):
         default=0.00,
         help_text="Commission earned from this review"
     )
+    agreed_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Price agreed for this user (30-70%% of balance when assigned); used for commission"
+    )
     created_at = models.DateTimeField(default=timezone.now, db_index=True)
     completed_at = models.DateTimeField(null=True, blank=True, help_text="When review was completed")
     

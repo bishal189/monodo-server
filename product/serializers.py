@@ -6,6 +6,7 @@ from authentication.models import User
 class ProductSerializer(serializers.ModelSerializer):
     image_url = serializers.SerializerMethodField()
     review_status = serializers.SerializerMethodField()
+    effective_price = serializers.SerializerMethodField()
     potential_commission = serializers.SerializerMethodField()
     commission_amount = serializers.SerializerMethodField()
     commission_rate = serializers.SerializerMethodField()
@@ -19,6 +20,7 @@ class ProductSerializer(serializers.ModelSerializer):
             'title',
             'description',
             'price',
+            'effective_price',
             'status',
             'position',
             'review_status',
@@ -27,7 +29,7 @@ class ProductSerializer(serializers.ModelSerializer):
             'commission_rate',
             'created_at'
         ]
-        read_only_fields = ['id', 'created_at', 'image_url', 'review_status', 'potential_commission', 'commission_amount', 'commission_rate']
+        read_only_fields = ['id', 'created_at', 'image_url', 'effective_price', 'review_status', 'potential_commission', 'commission_amount', 'commission_rate']
     
     def get_image_url(self, obj):
         """Return full URL for the image"""
@@ -49,26 +51,43 @@ class ProductSerializer(serializers.ModelSerializer):
             return review.status
         return 'NOT_COMPLETED'
     
+    def _get_effective_price(self, obj):
+        """Price for this user: agreed_price if set on review, else product price."""
+        user = self.context.get('user')
+        if not user or not user.is_authenticated:
+            return obj.price
+        review = obj.reviews.filter(user=user).first()
+        if review and review.agreed_price is not None:
+            return review.agreed_price
+        return obj.price
+    
+    def get_effective_price(self, obj):
+        """Return effective price (agreed or base) for API; used for display and commission."""
+        price = self._get_effective_price(obj)
+        return str(price) if price is not None else None
+    
     def get_potential_commission(self, obj):
-        """Calculate potential commission for the current user based on their level"""
+        """Calculate potential commission for the current user based on their level and effective price."""
         from decimal import Decimal
         user = self.context.get('user')
         if not user or not user.is_authenticated or not user.level:
             return None
         
+        effective = self._get_effective_price(obj)
         commission_rate = user.level.commission_rate
-        commission_amount = (obj.price * commission_rate) / Decimal('100')
+        commission_amount = (Decimal(str(effective)) * commission_rate) / Decimal('100')
         return float(commission_amount)
     
     def get_commission_amount(self, obj):
-        """Calculate commission amount for the current user based on their level"""
+        """Calculate commission amount for the current user based on effective price."""
         from decimal import Decimal
         user = self.context.get('user')
         if not user or not user.is_authenticated or not user.level:
             return None
         
+        effective = self._get_effective_price(obj)
         commission_rate = user.level.commission_rate
-        commission_amount = (obj.price * commission_rate) / Decimal('100')
+        commission_amount = (Decimal(str(effective)) * commission_rate) / Decimal('100')
         return float(commission_amount)
     
     def get_commission_rate(self, obj):
