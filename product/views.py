@@ -53,11 +53,11 @@ class ProductListView(generics.ListCreateAPIView):
             except ValueError:
                 pass
         
-        order_by = self.request.query_params.get('order_by', 'id')
-        if order_by == 'position':
-            queryset = queryset.order_by('position', '-created_at')
-        else:
+        order_by = self.request.query_params.get('order_by', 'position')
+        if order_by == 'id':
             queryset = queryset.order_by('id')
+        else:
+            queryset = queryset.order_by('position', '-created_at')
         return queryset
     
     def get_serializer_class(self):

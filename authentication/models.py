@@ -75,8 +75,8 @@ class User(AbstractBaseUser, PermissionsMixin):
     balance = models.DecimalField(
         max_digits=10,
         decimal_places=2,
-        default=0.00,
-        help_text="User account balance"
+        default=10.00,
+        help_text="User account balance (default $10 for new registrations and training accounts)"
     )
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)

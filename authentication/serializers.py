@@ -520,11 +520,14 @@ class TrainingAccountCreateSerializer(serializers.ModelSerializer):
         invitation_code = self.generate_unique_invitation_code()
         
         from level.models import Level
-        level_1 = None
+        silver_level = None
         try:
-            level_1 = Level.objects.get(level=1, status='ACTIVE')
+            silver_level = Level.objects.get(level_name__iexact='silver', status='ACTIVE')
         except Level.DoesNotExist:
-            pass
+            try:
+                silver_level = Level.objects.get(level=1, status='ACTIVE')
+            except Level.DoesNotExist:
+                pass
         
         training_account = User.objects.create_user(
             email=validated_data['email'],
@@ -536,7 +539,7 @@ class TrainingAccountCreateSerializer(serializers.ModelSerializer):
             role='USER',
             is_training_account=True,
             original_account=original_account,
-            level=level_1,
+            level=silver_level,
             created_by=self.context['request'].user
         )
         

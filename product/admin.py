@@ -6,14 +6,16 @@ from .models import Product, ProductReview
 class ProductAdmin(admin.ModelAdmin):
     list_display = [
         'id',
+        'position',
         'title',
         'price',
         'status',
         'created_at'
     ]
+    list_editable = ['position']
     list_filter = ['status', 'created_at']
     search_fields = ['title', 'description']
-    ordering = ['-created_at']
+    ordering = ['position', '-created_at']
     readonly_fields = ['created_at']
     
     fieldsets = (
@@ -22,6 +24,9 @@ class ProductAdmin(admin.ModelAdmin):
         }),
         ('Pricing', {
             'fields': ('price',)
+        }),
+        ('Ordering', {
+            'fields': ('position',)
         }),
         ('Additional Information', {
             'fields': ('created_at',)
