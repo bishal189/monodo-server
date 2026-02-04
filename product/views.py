@@ -933,8 +933,9 @@ def get_user_completed_products_count(request, user_id):
 @permission_classes([IsNormalUser])
 def current_user_level_journey_completed(request):
     """
-    Client API: Check if the logged-in user has completed their level journey.
-    Returns only user_id and completed (true/false).
+    Check if the logged-in user has completed their journey (first min_orders products by position).
+    Not level-based: pool = all ACTIVE products, first min_orders; completed = all in pool done.
+    Returns user_id and completed (true/false).
     """
     target_user = request.user
     if not target_user.level:
@@ -943,25 +944,23 @@ def current_user_level_journey_completed(request):
             'completed': False
         }, status=status.HTTP_200_OK)
 
-    level = target_user.level
-    level_products = Product.objects.filter(
-        levels=level,
-        status='ACTIVE'
-    ).distinct().order_by('position', '-created_at')
-
-    total_items = level_products.count()
+    min_orders = int(target_user.level.min_orders or 0)
+    pool_products = list(
+        Product.objects.filter(status='ACTIVE').order_by('position', '-created_at')[:min_orders]
+    )
+    total_items = len(pool_products)
     if total_items == 0:
         return Response({
             'user_id': target_user.id,
             'completed': False
         }, status=status.HTTP_200_OK)
 
+    pool_ids = [p.id for p in pool_products]
     completed_count = ProductReview.objects.filter(
         user=target_user,
-        product__in=level_products,
+        product_id__in=pool_ids,
         status='COMPLETED'
     ).count()
-
     journey_completed = completed_count >= total_items
 
     return Response({
@@ -974,9 +973,8 @@ def current_user_level_journey_completed(request):
 @permission_classes([IsAdminOrAgent])
 def user_level_journey_completed(request, user_id):
     """
-    Check if a user has completed the full level journey.
-    Journey = all products in the user's level (ordered by position).
-    Returns true only if the user has completed (COMPLETED review) every item in that journey.
+    Check if a user has completed their journey (first min_orders products by position).
+    Not level-based: pool = all ACTIVE products, first min_orders; completed = all in pool done.
     Access: Admin can check any USER; Agent can check only users they created.
     """
     try:
@@ -1002,12 +1000,11 @@ def user_level_journey_completed(request, user_id):
         }, status=status.HTTP_200_OK)
 
     level = target_user.level
-    level_products = Product.objects.filter(
-        levels=level,
-        status='ACTIVE'
-    ).distinct().order_by('position', '-created_at')
-
-    total_items = level_products.count()
+    min_orders = int(level.min_orders or 0)
+    pool_products = list(
+        Product.objects.filter(status='ACTIVE').order_by('position', '-created_at')[:min_orders]
+    )
+    total_items = len(pool_products)
     if total_items == 0:
         return Response({
             'user_id': target_user.id,
@@ -1018,15 +1015,15 @@ def user_level_journey_completed(request, user_id):
             'total_items': 0,
             'completed_count': 0,
             'completed': False,
-            'message': 'Level has no products in the journey.'
+            'message': 'No products in pool (min_orders or ACTIVE products).'
         }, status=status.HTTP_200_OK)
 
+    pool_ids = [p.id for p in pool_products]
     completed_count = ProductReview.objects.filter(
         user=target_user,
-        product__in=level_products,
+        product_id__in=pool_ids,
         status='COMPLETED'
     ).count()
-
     journey_completed = completed_count >= total_items
 
     return Response({
