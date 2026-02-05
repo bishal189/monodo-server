@@ -93,6 +93,23 @@ class ProductSerializer(serializers.ModelSerializer):
         """Return effective price (agreed or base) for API; used for display and commission."""
         price = self._get_effective_price(obj)
         return str(price) if price is not None else None
+
+    def _get_effective_commission_rate(self, obj):
+        """Commission rate for this product: frozen rate when user is frozen or this review has use_frozen_commission."""
+        from decimal import Decimal
+        user = self.context.get('user')
+        if not user or not user.is_authenticated or not user.level:
+            return None
+        review = obj.reviews.filter(user=user).first()
+        use_frozen = (
+            getattr(user, 'balance_frozen', False) or
+            (review and getattr(review, 'use_frozen_commission', False))
+        )
+        if use_frozen and getattr(user.level, 'frozen_commission_rate', None) is not None:
+            return user.level.frozen_commission_rate
+        if use_frozen:
+            return Decimal('6.00')
+        return user.level.commission_rate
     
     def get_potential_commission(self, obj):
         """Calculate potential commission for the current user based on their level and effective price."""
@@ -102,7 +119,9 @@ class ProductSerializer(serializers.ModelSerializer):
             return None
         
         effective = self._get_effective_price(obj)
-        commission_rate = user.level.commission_rate
+        commission_rate = self._get_effective_commission_rate(obj)
+        if commission_rate is None:
+            return None
         commission_amount = (Decimal(str(effective)) * commission_rate) / Decimal('100')
         return float(commission_amount)
     
@@ -114,17 +133,16 @@ class ProductSerializer(serializers.ModelSerializer):
             return None
         
         effective = self._get_effective_price(obj)
-        commission_rate = user.level.commission_rate
+        commission_rate = self._get_effective_commission_rate(obj)
+        if commission_rate is None:
+            return None
         commission_amount = (Decimal(str(effective)) * commission_rate) / Decimal('100')
         return float(commission_amount)
     
     def get_commission_rate(self, obj):
-        """Return commission rate percentage for the current user's level"""
-        user = self.context.get('user')
-        if not user or not user.is_authenticated or not user.level:
-            return None
-        
-        return float(user.level.commission_rate)
+        """Return commission rate percentage for the current user; frozen rate when balance frozen or review use_frozen_commission."""
+        rate = self._get_effective_commission_rate(obj)
+        return float(rate) if rate is not None else None
     
     def validate_price(self, value):
         """Ensure price is positive"""

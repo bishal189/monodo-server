@@ -105,6 +105,11 @@ class ProductReview(models.Model):
         db_index=True,
         help_text="User-specific display position when product is inserted at position for this user (e.g. 5). Used in GET /api/product/?user_id=X."
     )
+    use_frozen_commission = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="True if user was frozen at submit (insufficient balance). When they complete after top-up, use level.frozen_commission_rate."
+    )
     created_at = models.DateTimeField(default=timezone.now, db_index=True)
     completed_at = models.DateTimeField(null=True, blank=True, help_text="When review was completed")
     

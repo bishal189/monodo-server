@@ -385,7 +385,10 @@ def product_dashboard(request):
     if user.level:
         from level.serializers import LevelSerializer
         level_data = LevelSerializer(user.level).data
-        commission_rate = float(user.level.commission_rate)
+        if getattr(user, 'balance_frozen', False) and getattr(user.level, 'frozen_commission_rate', None) is not None:
+            commission_rate = float(user.level.frozen_commission_rate)
+        else:
+            commission_rate = float(user.level.commission_rate)
         required_amount = user.level.required_points
     
     return Response({
@@ -494,11 +497,18 @@ def submit_product_review(request):
             review_status = 'PENDING'
         else:
             review_status = 'COMPLETED'
-        
-        commission_rate = Decimal('0.00')
+
         if user.level:
-            commission_rate = user.level.commission_rate
-        
+            use_frozen = existing_review and getattr(existing_review, 'use_frozen_commission', False)
+            if use_frozen and (getattr(user.level, 'frozen_commission_rate', None) is not None):
+                commission_rate = user.level.frozen_commission_rate
+            elif use_frozen:
+                commission_rate = Decimal('6.00')
+            else:
+                commission_rate = user.level.commission_rate
+        else:
+            commission_rate = Decimal('0.00')
+
         commission_amount = (product_price * commission_rate) / Decimal('100')
         original_account = None
         original_account_bonus = Decimal('0.00')
@@ -516,7 +526,11 @@ def submit_product_review(request):
                 else:
                     existing_review.commission_earned = Decimal('0.00')
                     existing_review.completed_at = None
-                existing_review.save()
+                update_fields = ['review_text', 'status', 'commission_earned', 'completed_at']
+                if review_status == 'PENDING':
+                    existing_review.use_frozen_commission = True
+                    update_fields.append('use_frozen_commission')
+                existing_review.save(update_fields=update_fields)
                 review = existing_review
             else:
                 review = ProductReview.objects.create(
@@ -525,7 +539,8 @@ def submit_product_review(request):
                     review_text=review_text,
                     status=review_status,
                     commission_earned=commission_amount if review_status == 'COMPLETED' else Decimal('0.00'),
-                    completed_at=timezone.now() if review_status == 'COMPLETED' else None
+                    completed_at=timezone.now() if review_status == 'COMPLETED' else None,
+                    use_frozen_commission=(review_status == 'PENDING'),
                 )
             
             if should_process_commission:

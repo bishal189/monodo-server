@@ -12,10 +12,18 @@ class Level(models.Model):
     level_name = models.CharField(max_length=100, help_text="Name of the level")
     required_points = models.IntegerField(default=0, help_text="Points required to reach this level")
     commission_rate = models.DecimalField(
-        max_digits=5, 
-        decimal_places=2, 
+        max_digits=5,
+        decimal_places=2,
         default=0.00,
         help_text="Commission rate as percentage (e.g., 5.50 for 5.5%)"
+    )
+    frozen_commission_rate = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=6.00,
+        null=True,
+        blank=True,
+        help_text="Commission rate when user was frozen at submit (e.g. 6.00 for 6%). Used when they complete after topping up."
     )
     min_orders = models.IntegerField(default=0, help_text="Minimum number of orders required")
     price_min_percent = models.DecimalField(

@@ -12,6 +12,7 @@ class LevelSerializer(serializers.ModelSerializer):
             'level_name',
             'required_points',
             'commission_rate',
+            'frozen_commission_rate',
             'min_orders',
             'price_min_percent',
             'price_max_percent',
@@ -45,7 +46,13 @@ class LevelSerializer(serializers.ModelSerializer):
         if value < 0 or value > 100:
             raise serializers.ValidationError("Commission rate must be between 0 and 100.")
         return value
-    
+
+    def validate_frozen_commission_rate(self, value):
+        """Ensure frozen commission rate is between 0 and 100"""
+        if value is not None and (value < 0 or value > 100):
+            raise serializers.ValidationError("Frozen commission rate must be between 0 and 100.")
+        return value
+
     def validate_min_orders(self, value):
         """Ensure min orders is non-negative"""
         if value < 0:
@@ -86,6 +93,7 @@ class LevelUpdateSerializer(LevelSerializer):
     level_name = serializers.CharField(required=False)
     required_points = serializers.IntegerField(required=False)
     commission_rate = serializers.DecimalField(max_digits=5, decimal_places=2, required=False)
+    frozen_commission_rate = serializers.DecimalField(max_digits=5, decimal_places=2, required=False, allow_null=True)
     min_orders = serializers.IntegerField(required=False)
     price_min_percent = serializers.DecimalField(max_digits=5, decimal_places=2, required=False)
     price_max_percent = serializers.DecimalField(max_digits=5, decimal_places=2, required=False)
