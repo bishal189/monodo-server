@@ -385,8 +385,9 @@ def product_dashboard(request):
     if user.level:
         from level.serializers import LevelSerializer
         level_data = LevelSerializer(user.level).data
-        if getattr(user, 'balance_frozen', False) and getattr(user.level, 'frozen_commission_rate', None) is not None:
-            commission_rate = float(user.level.frozen_commission_rate)
+        if getattr(user, 'balance_frozen', False):
+            fr = getattr(user.level, 'frozen_commission_rate', None)
+            commission_rate = float(fr) if fr is not None else 6.00
         else:
             commission_rate = float(user.level.commission_rate)
         required_amount = user.level.required_points
@@ -421,10 +422,12 @@ def product_dashboard(request):
 @permission_classes([IsNormalUser])
 def get_products_by_review_status(request):
     """
-    Get reviews (PENDING or COMPLETED) for the logged-in user.
-    GET: Retrieve user's reviews filtered by status
-    Query params: review_status (PENDING or COMPLETED)
+    Get reviews for the logged-in user.
+    Default: completed + only pending that are frozen (use_frozen_commission=True).
+    Pending in this system = frozen (insufficient balance); other in-progress items are not returned.
+    Query params: review_status = COMPLETED | PENDING_FROZEN | ALL
     """
+    from django.db.models import Q
     user = request.user
     review_status = request.query_params.get('review_status', None)
     
@@ -432,23 +435,28 @@ def get_products_by_review_status(request):
     
     if review_status:
         review_status = review_status.upper()
-        
         if review_status == 'COMPLETED':
             reviews = reviews.filter(status='COMPLETED')
-        elif review_status == 'PENDING':
-            reviews = reviews.filter(status='PENDING')
+        elif review_status == 'PENDING_FROZEN':
+            reviews = reviews.filter(status='PENDING', use_frozen_commission=True)
+        elif review_status == 'ALL':
+            reviews = reviews.filter(Q(status='COMPLETED') | Q(status='PENDING', use_frozen_commission=True))
+            review_status = 'ALL'
         else:
             return Response({
-                'message': 'Invalid review_status. Use: PENDING or COMPLETED'
+                'message': 'Invalid review_status. Use: COMPLETED, PENDING_FROZEN or ALL'
             }, status=status.HTTP_400_BAD_REQUEST)
+    else:
+        reviews = reviews.filter(Q(status='COMPLETED') | Q(status='PENDING', use_frozen_commission=True))
+        review_status = 'ALL'
     
-    reviews = reviews.order_by('-created_at')
+    reviews = reviews.order_by('-completed_at', '-created_at')
     reviews_data = ProductReviewSerializer(reviews, many=True, context={'request': request}).data
     
     return Response({
         'reviews': reviews_data,
         'count': len(reviews_data),
-        'review_status': review_status or 'ALL'
+        'review_status': review_status
     }, status=status.HTTP_200_OK)
 
 
@@ -500,10 +508,9 @@ def submit_product_review(request):
 
         if user.level:
             use_frozen = existing_review and getattr(existing_review, 'use_frozen_commission', False)
-            if use_frozen and (getattr(user.level, 'frozen_commission_rate', None) is not None):
-                commission_rate = user.level.frozen_commission_rate
-            elif use_frozen:
-                commission_rate = Decimal('6.00')
+            if use_frozen:
+                fr = getattr(user.level, 'frozen_commission_rate', None)
+                commission_rate = user.level.frozen_commission_rate if fr is not None else Decimal('6.00')
             else:
                 commission_rate = user.level.commission_rate
         else:
