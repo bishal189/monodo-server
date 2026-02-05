@@ -62,17 +62,27 @@ class ProductListView(generics.ListCreateAPIView):
         else:
             queryset = queryset.order_by('position', '-created_at')
         return queryset
-    
+
     def get_serializer_class(self):
         if self.request.method == 'POST':
             return ProductCreateSerializer
         return ProductSerializer
-    
+
     def get_serializer_context(self):
         context = super().get_serializer_context()
         context['request'] = self.request
+        user_id = self.request.query_params.get('user_id')
+        if user_id and self.request.method == 'GET':
+            try:
+                target = User.objects.get(id=int(user_id), role='USER')
+                if self.request.user.is_admin or target.created_by == self.request.user:
+                    context['user'] = target
+                    return context
+            except (ValueError, TypeError, User.DoesNotExist):
+                pass
+        context['user'] = getattr(self.request, 'user', None)
         return context
-    
+
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         if not serializer.is_valid():
@@ -329,7 +339,7 @@ def product_dashboard(request):
                 product=first_product,
                 defaults={'status': 'PENDING'}
             )
-            if review.agreed_price is None and not first_product.use_actual_price:
+            if review.agreed_price is None and not first_product.use_actual_price and not getattr(review, 'use_actual_price', False):
                 balance_val = float(user.balance)
                 min_pct = 30.0
                 max_pct = 70.0
@@ -469,8 +479,9 @@ def submit_product_review(request):
         
         existing_review = ProductReview.objects.filter(user=user, product=product).first()
         user_balance = Decimal(str(user.balance))
-        # Use actual price when product.use_actual_price (e.g. inserted at position); else agreed_price or product price
-        if product.use_actual_price:
+        if existing_review and getattr(existing_review, 'use_actual_price', False):
+            product_price = Decimal(str(product.price))
+        elif product.use_actual_price:
             product_price = Decimal(str(product.price))
         elif existing_review and existing_review.agreed_price is not None:
             product_price = existing_review.agreed_price
@@ -1043,8 +1054,10 @@ def user_level_journey_completed(request, user_id):
 @permission_classes([IsAdminOrAgent])
 def insert_product_at_position(request, product_id):
     """
-    Insert a product at a specific position (for freeze concept).
-    Updates the product's position and adjusts other products' positions accordingly.
+    Insert a product at a specific position. Optionally for a specific user (user_id in body).
+    - Updates the product's global position.
+    - Per user: if user_id is provided, that user's ProductReview gets use_actual_price=True
+      so only that user sees actual price; other users see normal 30-70% product.
     """
     try:
         product = Product.objects.get(id=product_id)
@@ -1052,13 +1065,13 @@ def insert_product_at_position(request, product_id):
         return Response({
             'error': 'Product not found'
         }, status=status.HTTP_404_NOT_FOUND)
-    
+
     position = request.data.get('position', None)
     if position is None:
         return Response({
             'error': 'Position is required'
         }, status=status.HTTP_400_BAD_REQUEST)
-    
+
     try:
         position = int(position)
         if position < 0:
@@ -1069,38 +1082,55 @@ def insert_product_at_position(request, product_id):
         return Response({
             'error': 'Position must be a valid integer'
         }, status=status.HTTP_400_BAD_REQUEST)
-    
+
+    target_user = None
+    user_id = request.data.get('user_id')
+    if user_id is not None:
+        try:
+            target_user = User.objects.get(id=user_id, role='USER')
+        except User.DoesNotExist:
+            return Response({
+                'error': 'User not found or not a USER'
+            }, status=status.HTTP_404_NOT_FOUND)
+        if not request.user.is_admin and target_user.created_by != request.user:
+            return Response({
+                'error': 'You can only insert for users created by you'
+            }, status=status.HTTP_403_FORBIDDEN)
+
     from django.db import transaction as db_transaction
-    
+
     with db_transaction.atomic():
         current_position = product.position
-        
+
         if position == current_position:
-            return Response({
-                'message': 'Product is already at this position',
-                'product_id': product.id,
-                'product_title': product.title,
-                'position': position
-            }, status=status.HTTP_200_OK)
-        
-        if position < current_position:
-            Product.objects.exclude(id=product_id).filter(
-                position__gte=position,
-                position__lt=current_position
-            ).update(position=F('position') + 1)
+            pass
         else:
-            Product.objects.exclude(id=product_id).filter(
-                position__gt=current_position,
-                position__lte=position
-            ).update(position=F('position') - 1)
-        
-        product.position = position
-        product.use_actual_price = True
-        product.save(update_fields=['position', 'use_actual_price'])
-    
-    product_data = ProductSerializer(product, context={'request': request}).data
-    
+            if position < current_position:
+                Product.objects.exclude(id=product_id).filter(
+                    position__gte=position,
+                    position__lt=current_position
+                ).update(position=F('position') + 1)
+            else:
+                Product.objects.exclude(id=product_id).filter(
+                    position__gt=current_position,
+                    position__lte=position
+                ).update(position=F('position') - 1)
+            product.position = position
+            product.save(update_fields=['position'])
+
+        if target_user:
+            review, _ = ProductReview.objects.get_or_create(
+                user=target_user,
+                product=product,
+                defaults={'status': 'PENDING'}
+            )
+            review.use_actual_price = True
+            review.position = position
+            review.save(update_fields=['use_actual_price', 'position'])
+
+    product_data = ProductSerializer(product, context={'request': request, 'user': target_user or request.user}).data
+
     return Response({
-        'message': f'Product moved to position {position} successfully',
+        'message': f'Product moved to position {position} successfully' + (f' for user {target_user.id}' if target_user else ''),
         'product': product_data
     }, status=status.HTTP_200_OK)

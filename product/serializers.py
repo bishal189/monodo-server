@@ -10,7 +10,9 @@ class ProductSerializer(serializers.ModelSerializer):
     potential_commission = serializers.SerializerMethodField()
     commission_amount = serializers.SerializerMethodField()
     commission_rate = serializers.SerializerMethodField()
-    
+    position = serializers.SerializerMethodField()
+    inserted_for_user = serializers.SerializerMethodField()
+
     class Meta:
         model = Product
         fields = [
@@ -24,13 +26,14 @@ class ProductSerializer(serializers.ModelSerializer):
             'status',
             'position',
             'use_actual_price',
+            'inserted_for_user',
             'review_status',
             'potential_commission',
             'commission_amount',
             'commission_rate',
             'created_at'
         ]
-        read_only_fields = ['id', 'created_at', 'image_url', 'effective_price', 'review_status', 'potential_commission', 'commission_amount', 'commission_rate']
+        read_only_fields = ['id', 'created_at', 'image_url', 'effective_price', 'review_status', 'potential_commission', 'commission_amount', 'commission_rate', 'position', 'inserted_for_user']
     
     def get_image_url(self, obj):
         """Return full URL for the image"""
@@ -46,22 +49,44 @@ class ProductSerializer(serializers.ModelSerializer):
         user = self.context.get('user')
         if not user or not user.is_authenticated:
             return None
-        
+
         review = obj.reviews.filter(user=user).first()
         if review:
             return review.status
         return 'NOT_COMPLETED'
-    
-    def _get_effective_price(self, obj):
-        """Price for this user: use actual price if product.use_actual_price (e.g. inserted at position), else agreed_price or product price."""
-        if getattr(obj, 'use_actual_price', False):
-            return obj.price
+
+    def get_position(self, obj):
+        """Return user-specific position when product is in that user's order (e.g. inserted at position for them), else product's global position."""
+        user = self.context.get('user')
+        if user and user.is_authenticated:
+            review = obj.reviews.filter(user=user).first()
+            if review and getattr(review, 'position', None) is not None:
+                return review.position
+        return obj.position
+
+    def get_inserted_for_user(self, obj):
+        """True if this product was explicitly inserted at a position for the current user (use_actual_price + position set on their review)."""
         user = self.context.get('user')
         if not user or not user.is_authenticated:
-            return obj.price
+            return False
         review = obj.reviews.filter(user=user).first()
-        if review and review.agreed_price is not None:
-            return review.agreed_price
+        if not review:
+            return False
+        return bool(getattr(review, 'use_actual_price', False) or getattr(review, 'position', None) is not None)
+
+    def _get_effective_price(self, obj):
+        """Price for this user: use actual price if this user's review has use_actual_price (inserted for them), else product.use_actual_price, else agreed_price or product price."""
+        user = self.context.get('user')
+        if user and user.is_authenticated:
+            review = obj.reviews.filter(user=user).first()
+            if review and getattr(review, 'use_actual_price', False):
+                return obj.price
+        if getattr(obj, 'use_actual_price', False):
+            return obj.price
+        if user and user.is_authenticated:
+            review = obj.reviews.filter(user=user).first()
+            if review and review.agreed_price is not None:
+                return review.agreed_price
         return obj.price
     
     def get_effective_price(self, obj):
@@ -190,6 +215,8 @@ class ProductReviewSerializer(serializers.ModelSerializer):
             'product_image_url',
             'review_text',
             'status',
+            'position',
+            'use_actual_price',
             'commission_earned',
             'created_at',
             'completed_at'

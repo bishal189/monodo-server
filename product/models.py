@@ -94,6 +94,17 @@ class ProductReview(models.Model):
         blank=True,
         help_text="Price agreed for this user (30-70%% of balance when assigned); used for commission"
     )
+    use_actual_price = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="If True, this user sees product at actual price (no 30-70%%). Set when product is inserted at position for this user."
+    )
+    position = models.IntegerField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="User-specific display position when product is inserted at position for this user (e.g. 5). Used in GET /api/product/?user_id=X."
+    )
     created_at = models.DateTimeField(default=timezone.now, db_index=True)
     completed_at = models.DateTimeField(null=True, blank=True, help_text="When review was completed")
     
