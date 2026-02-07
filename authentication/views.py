@@ -470,8 +470,6 @@ def agent_my_created_users(request):
     original_accounts = all_users.filter(is_training_account=False)
     training_accounts = all_users.filter(is_training_account=True)
     
-    table_data = format_user_table_data(all_users)
-    
     original_accounts_serializer = UserProfileSerializer(original_accounts, many=True)
     training_accounts_serializer = UserProfileSerializer(training_accounts, many=True)
     
@@ -500,19 +498,9 @@ def agent_my_created_users(request):
     
     structured_data.sort(key=lambda x: x['date_joined'], reverse=True)
     
-    original_accounts_count = original_accounts.count()
-    training_accounts_count = training_accounts.count()
-    
     return Response({
-        'table_data': table_data,
         'users': structured_data,
-        'flat_list': original_accounts_serializer.data + training_accounts_serializer.data,
-        'count': all_users.count(),
-        'summary': {
-            'original_accounts': original_accounts_count,
-            'training_accounts': training_accounts_count,
-            'total': all_users.count()
-        }
+        'count': all_users.count()
     }, status=status.HTTP_200_OK)
 
 
@@ -760,8 +748,6 @@ def admin_all_agent_created_users(request):
     original_accounts = all_users.filter(is_training_account=False)
     training_accounts = all_users.filter(is_training_account=True)
     
-    table_data = format_user_table_data(all_users)
-    
     original_accounts_serializer = UserProfileSerializer(original_accounts, many=True)
     training_accounts_serializer = UserProfileSerializer(training_accounts, many=True)
     
@@ -790,19 +776,9 @@ def admin_all_agent_created_users(request):
     
     structured_data.sort(key=lambda x: x['date_joined'], reverse=True)
     
-    original_accounts_count = original_accounts.count()
-    training_accounts_count = training_accounts.count()
-    
     return Response({
-        'table_data': table_data,
         'users': structured_data,
-        'flat_list': original_accounts_serializer.data + training_accounts_serializer.data,
-        'count': all_users.count(),
-        'summary': {
-            'original_accounts': original_accounts_count,
-            'training_accounts': training_accounts_count,
-            'total': all_users.count()
-        }
+        'count': all_users.count()
     }, status=status.HTTP_200_OK)
 
 
