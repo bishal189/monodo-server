@@ -15,8 +15,13 @@ urlpatterns = [
     path('user-completion-stats/', views.user_product_completion_stats, name='user-product-completion-stats'),
     path('user/products/', views.get_user_products_by_min_orders, name='get-user-products-by-min-orders'),
     path('admin/user/<int:user_id>/products/', views.get_user_products_for_admin, name='get-user-products-for-admin'),
+    path('admin/user/<int:user_id>/order-overview/', views.admin_user_order_overview, name='admin-user-order-overview'),
+    path('admin/user/<int:user_id>/reset-continuous-orders/', views.admin_reset_continuous_orders, name='admin-reset-continuous-orders'),
     path('admin/user/<int:user_id>/completed-count/', views.get_user_completed_products_count, name='get-user-completed-products-count'),
     path('admin/user/<int:user_id>/level-journey-completed/', views.user_level_journey_completed, name='user-level-journey-completed'),
+    path('admin/user/<int:user_id>/product/<int:product_id>/remove/', views.admin_remove_product_for_user, name='admin-remove-product-for-user'),
+    path('admin/user/<int:user_id>/product/<int:product_id>/add/', views.admin_add_product_to_continuous_order, name='admin-add-product-to-continuous-order'),
+    path('admin/user/<int:user_id>/product/<int:product_id>/replace-next/', views.admin_replace_next_order, name='admin-replace-next-order'),
     path('level-journey-completed/', views.current_user_level_journey_completed, name='current-user-level-journey-completed'),
     path('<int:product_id>/position/', views.insert_product_at_position, name='insert-product-at-position'),
 ]

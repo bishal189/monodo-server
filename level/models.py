@@ -26,6 +26,11 @@ class Level(models.Model):
         help_text="Commission rate when user was frozen at submit (e.g. 6.00 for 6%). Used when they complete after topping up."
     )
     min_orders = models.IntegerField(default=0, help_text="Minimum number of orders required")
+    start_continuous_orders_after = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="Continuous orders start after this many (e.g. 8 means add at position 9, 10, ...). If null, uses max(0, min_orders - 10)."
+    )
     price_min_percent = models.DecimalField(
         max_digits=5,
         decimal_places=2,

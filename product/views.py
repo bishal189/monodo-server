@@ -56,9 +56,13 @@ class ProductListView(generics.ListCreateAPIView):
             except ValueError:
                 pass
         
-        order_by = self.request.query_params.get('order_by', 'position')
+        order_by = self.request.query_params.get('order_by', 'price')
         if order_by == 'id':
             queryset = queryset.order_by('id')
+        elif order_by == 'price_desc':
+            queryset = queryset.order_by('-price')
+        elif order_by == 'price' or order_by == 'price_asc':
+            queryset = queryset.order_by('price')
         else:
             queryset = queryset.order_by('position', '-created_at')
         return queryset
@@ -316,6 +320,7 @@ def product_dashboard(request):
     today_commission = float(today_commission)
 
     pool_products = []
+    all_products_ordered = []
     if user.level:
         level = user.level
         min_orders = int(level.min_orders or 0)
@@ -323,15 +328,40 @@ def product_dashboard(request):
         pool_products = list(all_products_qs[:min_orders])
         entitlements_count = min_orders
 
-        pool_product_ids = [p.id for p in pool_products]
+        start_continuous = _get_start_continuous_orders_after(user) + 1
+        assigned_reviews = list(ProductReview.objects.filter(
+            user=user,
+            position__isnull=False,
+            position__gte=start_continuous
+        ).select_related('product').order_by('position'))
+        assigned_by_pos = {r.position: r.product for r in assigned_reviews if r.product and r.product.status == 'ACTIVE'}
+
+        combined = []
+        used_product_ids = set()
+        for i, p in enumerate(pool_products):
+            pos = i + 1
+            if pos in assigned_by_pos:
+                assigned_product = assigned_by_pos[pos]
+                if assigned_product.id not in used_product_ids:
+                    combined.append((pos, assigned_product))
+                    used_product_ids.add(assigned_product.id)
+            elif p.id not in used_product_ids:
+                combined.append((pos, p))
+                used_product_ids.add(p.id)
+        for pos, prod in sorted(assigned_by_pos.items()):
+            if pos > min_orders and prod.id not in used_product_ids:
+                combined.append((pos, prod))
+                used_product_ids.add(prod.id)
+        combined.sort(key=lambda x: x[0])
+        all_products_ordered = [p for _, p in combined]
+        pool_product_ids = [p.id for p in all_products_ordered]
         completed_reviews = set(ProductReview.objects.filter(
             user=user,
             product_id__in=pool_product_ids,
             status='COMPLETED'
         ).values_list('product_id', flat=True))
         completed_in_pool = len(completed_reviews)
-
-        next_to_do = [p for p in pool_products if p.id not in completed_reviews]
+        next_to_do = [p for p in all_products_ordered if p.id not in completed_reviews]
         if next_to_do:
             first_product = next_to_do[0]
             review, _ = ProductReview.objects.get_or_create(
@@ -408,7 +438,7 @@ def product_dashboard(request):
         'product_count': len(products_data),
         'pagination': {
             'total_products': total_products,
-            'pool_size': len(pool_products),
+            'pool_size': len(all_products_ordered) if all_products_ordered else len(pool_products),
             'entitlements_cap': entitlements_count,
             'limit': limit,
             'offset': offset,
@@ -913,6 +943,136 @@ def get_user_products_for_admin(request, user_id):
     }, status=status.HTTP_200_OK)
 
 
+@api_view(['GET', 'PATCH'])
+@permission_classes([IsAdminOrAgent])
+def admin_user_order_overview(request, user_id):
+    """
+    GET: Order overview for a user.
+    PATCH: Save order settings (start_continuous_orders_after) to the user's level.
+    """
+    try:
+        target_user = User.objects.get(id=user_id, role='USER')
+    except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if not request.user.is_admin and target_user.created_by != request.user:
+        return Response({'error': 'You can only view users created by you'}, status=status.HTTP_403_FORBIDDEN)
+
+    if request.method == 'PATCH':
+        if not target_user.level:
+            return Response({'error': 'User has no level assigned'}, status=status.HTTP_400_BAD_REQUEST)
+        level = target_user.level
+        val = request.data.get('start_continuous_orders_after')
+        if val is not None:
+            try:
+                val = int(val)
+                if val < 0:
+                    return Response({'error': 'start_continuous_orders_after must be >= 0'}, status=status.HTTP_400_BAD_REQUEST)
+            except (TypeError, ValueError):
+                return Response({'error': 'start_continuous_orders_after must be a non-negative integer'}, status=status.HTTP_400_BAD_REQUEST)
+            level.start_continuous_orders_after = val
+            level.save(update_fields=['start_continuous_orders_after'])
+
+        assigned = request.data.get('assigned_products', [])
+        if assigned:
+            start_continuous = _get_start_continuous_orders_after(target_user) + 1
+            ProductReview.objects.filter(
+                user=target_user,
+                position__gte=start_continuous
+            ).update(position=None, use_actual_price=False)
+            for item in assigned:
+                pid = item.get('product_id')
+                pos = item.get('position')
+                if pid is None or pos is None:
+                    continue
+                try:
+                    pos = int(pos)
+                    if pos < start_continuous:
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                try:
+                    product = Product.objects.get(id=pid, status='ACTIVE')
+                except Product.DoesNotExist:
+                    continue
+                review, _ = ProductReview.objects.get_or_create(
+                    user=target_user,
+                    product=product,
+                    defaults={'status': 'PENDING'}
+                )
+                review.position = pos
+                review.use_actual_price = True
+                review.save(update_fields=['position', 'use_actual_price'])
+
+        return Response({
+            'message': 'Order settings saved successfully',
+            'user_id': target_user.id,
+            'start_continuous_orders_after': level.start_continuous_orders_after
+        }, status=status.HTTP_200_OK)
+
+    today = timezone.now().date()
+    today_start = timezone.make_aware(datetime.combine(today, datetime.min.time()))
+
+    if not target_user.level:
+        return Response({
+            'user_id': target_user.id,
+            'username': target_user.username,
+            'current_orders_made': 0,
+            'orders_received_today': 0,
+            'max_orders_by_level': 0,
+            'start_continuous_orders_after': 0,
+            'daily_available_orders': 0,
+            'assigned_products': []
+        }, status=status.HTTP_200_OK)
+
+    min_orders = int(target_user.level.min_orders or 0)
+    pool_products = list(
+        Product.objects.filter(status='ACTIVE').order_by('position', '-created_at')[:min_orders]
+    )
+    pool_product_ids = [p.id for p in pool_products]
+
+    current_orders_made = ProductReview.objects.filter(
+        user=target_user,
+        product_id__in=pool_product_ids,
+        status='COMPLETED'
+    ).count()
+
+    orders_received_today = ProductReview.objects.filter(
+        user=target_user,
+        status='COMPLETED',
+        completed_at__gte=today_start
+    ).count()
+
+    start_continuous_orders_after = _get_start_continuous_orders_after(target_user)
+    daily_available_orders = min_orders
+
+    inserted_reviews = ProductReview.objects.filter(
+        user=target_user,
+        position__isnull=False
+    ).select_related('product').order_by('position')
+
+    assigned = []
+    for review in inserted_reviews:
+        if review.product and review.product.status == 'ACTIVE':
+            assigned.append({
+                'id': review.product.id,
+                'title': review.product.title,
+                'position': review.position,
+                'price': str(review.product.price)
+            })
+
+    return Response({
+        'user_id': target_user.id,
+        'username': target_user.username,
+        'current_orders_made': current_orders_made,
+        'orders_received_today': orders_received_today,
+        'max_orders_by_level': min_orders,
+        'start_continuous_orders_after': start_continuous_orders_after,
+        'daily_available_orders': daily_available_orders,
+        'assigned_products': assigned
+    }, status=status.HTTP_200_OK)
+
+
 @api_view(['GET'])
 @permission_classes([IsAdminOrAgent])
 def get_user_completed_products_count(request, user_id):
@@ -1155,4 +1315,177 @@ def insert_product_at_position(request, product_id):
     return Response({
         'message': f'Product moved to position {position} successfully' + (f' for user {target_user.id}' if target_user else ''),
         'product': product_data
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAdminOrAgent])
+def admin_remove_product_for_user(request, user_id, product_id):
+    """
+    Remove a product from a user's list by deleting their ProductReview.
+    Admin/Agent can remove for users they created.
+    """
+    try:
+        target_user = User.objects.get(id=user_id, role='USER')
+    except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        product = Product.objects.get(id=product_id)
+    except Product.DoesNotExist:
+        return Response({'error': 'Product not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if not request.user.is_admin and target_user.created_by != request.user:
+        return Response({'error': 'You can only remove products for users created by you'}, status=status.HTTP_403_FORBIDDEN)
+
+    deleted_count, _ = ProductReview.objects.filter(user=target_user, product=product).delete()
+
+    if deleted_count == 0:
+        return Response({
+            'message': 'No review found for this user and product',
+            'user_id': target_user.id,
+            'product_id': product.id
+        }, status=status.HTTP_200_OK)
+
+    return Response({
+        'message': 'Product removed successfully',
+        'user_id': target_user.id,
+        'product_id': product.id
+    }, status=status.HTTP_200_OK)
+
+
+def _get_start_continuous_orders_after(user):
+    """Get start_continuous_orders_after from user's level, or fallback to max(0, min_orders - 10)."""
+    if not user or not user.level:
+        return 0
+    level = user.level
+    val = getattr(level, 'start_continuous_orders_after', None)
+    if val is not None:
+        return max(0, int(val))
+    min_orders = int(level.min_orders or 0)
+    return max(0, min_orders - 10)
+
+
+def _get_next_continuous_position(user):
+    """Next position for Add/Replace = start_continuous_orders_after + 1 + count of products with position >= that."""
+    start = _get_start_continuous_orders_after(user)
+    continuous_start = start + 1
+    count = ProductReview.objects.filter(
+        user=user,
+        position__gte=continuous_start
+    ).count()
+    return continuous_start + count
+
+
+@api_view(['POST'])
+@permission_classes([IsAdminOrAgent])
+def admin_reset_continuous_orders(request, user_id):
+    """
+    Reset continuous orders for a user: clear position and use_actual_price for all
+    ProductReviews with position >= start_continuous_orders_after + 1.
+    """
+    try:
+        target_user = User.objects.get(id=user_id, role='USER')
+    except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if not request.user.is_admin and target_user.created_by != request.user:
+        return Response({'error': 'You can only reset continuous orders for users created by you'}, status=status.HTTP_403_FORBIDDEN)
+
+    if not target_user.level:
+        return Response({'message': 'User has no level; no continuous orders to reset', 'user_id': target_user.id}, status=status.HTTP_200_OK)
+
+    continuous_start = _get_start_continuous_orders_after(target_user) + 1
+    updated = ProductReview.objects.filter(
+        user=target_user,
+        position__gte=continuous_start
+    ).update(position=None, use_actual_price=False)
+
+    return Response({
+        'message': 'Continuous orders reset successfully',
+        'user_id': target_user.id,
+        'cleared_count': updated
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['POST', 'PATCH'])
+@permission_classes([IsAdminOrAgent])
+def admin_add_product_to_continuous_order(request, user_id, product_id):
+    """
+    Add product to continuous order. Position = start_continuous_orders_after + 1 + count.
+    E.g. if start=8, first add -> position 9, second add -> position 10.
+    """
+    try:
+        target_user = User.objects.get(id=user_id, role='USER')
+    except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        product = Product.objects.get(id=product_id)
+    except Product.DoesNotExist:
+        return Response({'error': 'Product not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if not request.user.is_admin and target_user.created_by != request.user:
+        return Response({'error': 'You can only add products for users created by you'}, status=status.HTTP_403_FORBIDDEN)
+
+    if not target_user.level:
+        return Response({'error': 'User has no level assigned'}, status=status.HTTP_400_BAD_REQUEST)
+
+    next_position = _get_next_continuous_position(target_user)
+    review, _ = ProductReview.objects.get_or_create(
+        user=target_user,
+        product=product,
+        defaults={'status': 'PENDING'}
+    )
+    review.use_actual_price = True
+    review.position = next_position
+    review.save(update_fields=['use_actual_price', 'position'])
+
+    return Response({
+        'message': f'Product added to continuous order at position {next_position}',
+        'user_id': target_user.id,
+        'product_id': product.id,
+        'position': next_position
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAdminOrAgent])
+def admin_replace_next_order(request, user_id, product_id):
+    """
+    Replace the product at the next continuous order slot.
+    Same position logic as Add; overwrites if a product already occupies that slot.
+    """
+    try:
+        target_user = User.objects.get(id=user_id, role='USER')
+    except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        product = Product.objects.get(id=product_id)
+    except Product.DoesNotExist:
+        return Response({'error': 'Product not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if not request.user.is_admin and target_user.created_by != request.user:
+        return Response({'error': 'You can only replace orders for users created by you'}, status=status.HTTP_403_FORBIDDEN)
+
+    if not target_user.level:
+        return Response({'error': 'User has no level assigned'}, status=status.HTTP_400_BAD_REQUEST)
+
+    next_position = _get_next_continuous_position(target_user)
+    ProductReview.objects.filter(user=target_user, position=next_position).exclude(product=product).update(position=None, use_actual_price=False)
+    review, _ = ProductReview.objects.get_or_create(
+        user=target_user,
+        product=product,
+        defaults={'status': 'PENDING'}
+    )
+    review.use_actual_price = True
+    review.position = next_position
+    review.save(update_fields=['use_actual_price', 'position'])
+
+    return Response({
+        'message': f'Product set at next order position {next_position}',
+        'user_id': target_user.id,
+        'product_id': product.id,
+        'position': next_position
     }, status=status.HTTP_200_OK)

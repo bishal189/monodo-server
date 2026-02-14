@@ -25,7 +25,7 @@ class LevelAdmin(admin.ModelAdmin):
             'fields': ('level', 'level_name', 'status')
         }),
         ('Requirements', {
-            'fields': ('required_points', 'min_orders', 'commission_rate', 'frozen_commission_rate')
+            'fields': ('required_points', 'min_orders', 'start_continuous_orders_after', 'commission_rate', 'frozen_commission_rate')
         }),
         ('Price Range (% of balance for next product)', {
             'fields': ('price_min_percent', 'price_max_percent')

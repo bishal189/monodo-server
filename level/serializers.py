@@ -14,6 +14,7 @@ class LevelSerializer(serializers.ModelSerializer):
             'commission_rate',
             'frozen_commission_rate',
             'min_orders',
+            'start_continuous_orders_after',
             'price_min_percent',
             'price_max_percent',
             'benefits',
@@ -95,6 +96,7 @@ class LevelUpdateSerializer(LevelSerializer):
     commission_rate = serializers.DecimalField(max_digits=5, decimal_places=2, required=False)
     frozen_commission_rate = serializers.DecimalField(max_digits=5, decimal_places=2, required=False, allow_null=True)
     min_orders = serializers.IntegerField(required=False)
+    start_continuous_orders_after = serializers.IntegerField(required=False, allow_null=True)
     price_min_percent = serializers.DecimalField(max_digits=5, decimal_places=2, required=False)
     price_max_percent = serializers.DecimalField(max_digits=5, decimal_places=2, required=False)
     benefits = serializers.CharField(required=False, allow_blank=True)
