@@ -531,7 +531,15 @@ def submit_product_review(request):
         
         was_previously_completed = existing_review and existing_review.status == 'COMPLETED'
         
-        if user_balance < product_price:
+        # If user is frozen on this product, effective amount for this order is frozen amount (balance was already moved there)
+        is_frozen_pending = (
+            existing_review and getattr(existing_review, 'use_frozen_commission', False) and
+            getattr(user, 'balance_frozen', False) and user.balance_frozen_amount is not None
+        )
+        if is_frozen_pending:
+            effective_balance = Decimal(str(user.balance_frozen_amount))
+            review_status = 'COMPLETED' if effective_balance >= product_price else 'PENDING'
+        elif user_balance < product_price:
             review_status = 'PENDING'
         else:
             review_status = 'COMPLETED'
@@ -588,14 +596,23 @@ def submit_product_review(request):
                     original_account.balance += original_account_bonus
                     original_account.save(update_fields=['balance'])
                 
-                user.balance += commission_amount
-                user.balance_frozen = False
-                user.balance_frozen_amount = None
+                # Completing frozen order: total balance = frozen amount + commission
+                if is_frozen_pending and getattr(user, 'balance_frozen', False):
+                    frozen_amount = Decimal(str(user.balance_frozen_amount or 0))
+                    user.balance = frozen_amount + commission_amount
+                    user.balance_frozen = False
+                    user.balance_frozen_amount = None
+                else:
+                    user.balance += commission_amount
+                    user.balance_frozen = False
+                    user.balance_frozen_amount = None
                 user.save(update_fields=['balance', 'balance_frozen', 'balance_frozen_amount'])
-            elif review_status == 'PENDING':
+            elif review_status == 'PENDING' and not getattr(user, 'balance_frozen', False):
+                # New freeze: account balance = shortfall (-9), frozen = amount they had (100)
+                user.balance = user_balance - product_price
                 user.balance_frozen = True
-                user.balance_frozen_amount = product_price - user_balance
-                user.save(update_fields=['balance_frozen', 'balance_frozen_amount'])
+                user.balance_frozen_amount = user_balance
+                user.save(update_fields=['balance', 'balance_frozen', 'balance_frozen_amount'])
         
         today = timezone.now().date()
         today_start = timezone.make_aware(datetime.combine(today, datetime.min.time()))

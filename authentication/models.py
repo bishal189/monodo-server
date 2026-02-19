@@ -88,7 +88,7 @@ class User(AbstractBaseUser, PermissionsMixin):
         decimal_places=2,
         null=True,
         blank=True,
-        help_text="Shortfall when frozen (product price minus balance); shown when balance_frozen is True"
+        help_text="Amount frozen (user balance moved here when insufficient for product). Credits while frozen add here. On completing frozen product, total balance = this + commission."
     )
     credibility = models.PositiveSmallIntegerField(
         default=100,
