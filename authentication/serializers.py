@@ -393,8 +393,8 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
     )
     today_commission = serializers.SerializerMethodField(read_only=True)
     matching_range = serializers.SerializerMethodField(read_only=True)
-    matching_min_percent = serializers.SerializerMethodField(read_only=True)
-    matching_max_percent = serializers.SerializerMethodField(read_only=True)
+    matching_min_percent = serializers.DecimalField(max_digits=5, decimal_places=2, required=False, allow_null=True)
+    matching_max_percent = serializers.DecimalField(max_digits=5, decimal_places=2, required=False, allow_null=True)
     password = serializers.CharField(write_only=True, required=False, allow_blank=True)
     confirm_password = serializers.CharField(write_only=True, required=False, allow_blank=True)
     payment_password = serializers.CharField(write_only=True, required=False, allow_blank=True)
@@ -421,24 +421,11 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
         return self.context.get('today_commission', 0)
 
     def get_matching_range(self, obj):
-        if obj.level:
-            a = getattr(obj.level, 'price_min_percent', None)
-            b = getattr(obj.level, 'price_max_percent', None)
-            if a is not None and b is not None:
-                return f"{int(a)}% – {int(b)}%"
-        return None
-
-    def get_matching_min_percent(self, obj):
-        if obj.level:
-            a = getattr(obj.level, 'price_min_percent', None)
-            return float(a) if a is not None else None
-        return None
-
-    def get_matching_max_percent(self, obj):
-        if obj.level:
-            b = getattr(obj.level, 'price_max_percent', None)
-            return float(b) if b is not None else None
-        return None
+        a = getattr(obj, 'matching_min_percent', None)
+        b = getattr(obj, 'matching_max_percent', None)
+        if a is not None and b is not None:
+            return f"{int(a)}% – {int(b)}%"
+        return "30% – 70%"
 
     def get_level(self, obj):
         if obj.level:

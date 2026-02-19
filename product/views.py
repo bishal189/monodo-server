@@ -373,9 +373,9 @@ def product_dashboard(request):
                 balance_val = float(user.balance)
                 min_pct = 30.0
                 max_pct = 70.0
-                if user.level:
-                    min_pct = float(user.level.price_min_percent or 30)
-                    max_pct = float(user.level.price_max_percent or 70)
+                if getattr(user, 'matching_min_percent', None) is not None and getattr(user, 'matching_max_percent', None) is not None:
+                    min_pct = float(user.matching_min_percent)
+                    max_pct = float(user.matching_max_percent)
                 if balance_val > 0:
                     low = (min_pct / 100) * balance_val
                     high = (max_pct / 100) * balance_val
@@ -1175,8 +1175,12 @@ def admin_user_account_details(request, user_id):
             product_id__in=pool_ids,
             status='COMPLETED'
         ).count()
-        min_pct = float(level.price_min_percent or 30)
-        max_pct = float(level.price_max_percent or 70)
+        if getattr(target_user, 'matching_min_percent', None) is not None and getattr(target_user, 'matching_max_percent', None) is not None:
+            min_pct = float(target_user.matching_min_percent)
+            max_pct = float(target_user.matching_max_percent)
+        else:
+            min_pct = 30.0
+            max_pct = 70.0
         product_range = f"{int(min_pct)}% - {int(max_pct)}%"
     progress = f"{current_stage}/{available_for_daily_order}" if available_for_daily_order else "0/0"
 

@@ -106,6 +106,16 @@ class User(AbstractBaseUser, PermissionsMixin):
         max_digits=10, decimal_places=2, null=True, blank=True,
         help_text="Withdrawal amount needed to complete order"
     )
+    matching_min_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        verbose_name="Min %",
+        help_text="Min % of balance for product price (e.g. 30 for 30%). Default 30 if not set."
+    )
+    matching_max_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        verbose_name="Max %",
+        help_text="Max % of balance for product price (e.g. 70 for 70%). Default 70 if not set."
+    )
     allow_rob_order = models.BooleanField(default=True, help_text="Whether to allow rob order")
     allow_withdrawal = models.BooleanField(default=True, help_text="Whether to allow withdrawal")
     number_of_draws = models.PositiveIntegerField(null=True, blank=True, help_text="Number of draws")
