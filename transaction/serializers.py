@@ -318,3 +318,66 @@ class WithdrawalAccountUpdateSerializer(serializers.ModelSerializer):
                     f"Invalid crypto network '{value}'. Must be one of: {', '.join(valid_networks)}"
                 )
         return value
+
+
+class WithdrawalAccountWalletModalSerializer(serializers.ModelSerializer):
+    wallet_name = serializers.CharField(source='crypto_wallet_name', read_only=True)
+    wallet_address = serializers.CharField(source='crypto_wallet_address', read_only=True)
+    phone_number = serializers.CharField(source='user.phone_number', read_only=True, default='')
+    currency = serializers.SerializerMethodField()
+    network_type = serializers.SerializerMethodField()
+
+    class Meta:
+        model = WithdrawalAccount
+        fields = ['wallet_name', 'wallet_address', 'phone_number', 'currency', 'network_type']
+
+    def get_currency(self, obj):
+        raw = (obj.crypto_network or '').upper()
+        return 'USDT' if raw == 'TRC20' else (raw if raw in ('USDT', 'USDC', 'ETH', 'BTC') else 'USDT')
+
+    def get_network_type(self, obj):
+        raw = (obj.crypto_network or '').upper()
+        return 'TRC 20' if raw == 'TRC20' else raw
+
+
+class WithdrawalAccountWalletModalUpdateSerializer(serializers.Serializer):
+    wallet_name = serializers.CharField(required=False, allow_blank=False)
+    wallet_address = serializers.CharField(required=False, allow_blank=False)
+    phone_number = serializers.CharField(required=False, allow_blank=True)
+    currency = serializers.ChoiceField(
+        choices=[('USDT', 'USDT'), ('USDC', 'USDC'), ('ETH', 'ETH'), ('BTC', 'BTC')],
+        required=False
+    )
+    network_type = serializers.CharField(required=False)
+
+    _valid_networks = [c[0] for c in WithdrawalAccount.CRYPTO_NETWORK_CHOICES]
+
+    def validate_network_type(self, value):
+        if not value:
+            return value
+        v = value.upper().strip().replace(' ', '')
+        if v == 'TRC20':
+            return 'TRC20'
+        if v in ('ERC20', 'ERC 20'):
+            cur = self.initial_data.get('currency', '').upper().strip()
+            return 'USDC' if cur == 'USDC' else 'ETH'
+        if v in self._valid_networks:
+            return v
+        raise serializers.ValidationError(
+            "Must be one of: TRC 20, TRC20, ERC 20, USDT, USDC, ETH, BTC"
+        )
+
+    def update(self, instance, validated_data):
+        if 'wallet_name' in validated_data:
+            instance.crypto_wallet_name = validated_data['wallet_name'].strip()
+        if 'wallet_address' in validated_data:
+            instance.crypto_wallet_address = validated_data['wallet_address'].strip()
+        if 'phone_number' in validated_data:
+            instance.user.phone_number = validated_data.get('phone_number') or ''
+            instance.user.save(update_fields=['phone_number'])
+        if 'network_type' in validated_data and validated_data['network_type']:
+            instance.crypto_network = validated_data['network_type']
+        elif 'currency' in validated_data and validated_data['currency']:
+            instance.crypto_network = validated_data['currency']
+        instance.save()
+        return instance

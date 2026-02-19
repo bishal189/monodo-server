@@ -19,7 +19,7 @@ from .serializers import (
 from authentication.permissions import IsAdminOrAgent, IsNormalUser
 from authentication.models import User
 from level.models import Level
-from transaction.models import Transaction
+from transaction.models import Transaction, WithdrawalAccount
 
 
 class ProductListView(generics.ListCreateAPIView):
@@ -1119,6 +1119,98 @@ def get_user_completed_products_count(request, user_id):
         'username': target_user.username,
         'completed': completed_count,
         'min_orders': min_orders
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAdminOrAgent])
+def admin_user_account_details(request, user_id):
+    try:
+        target_user = User.objects.select_related('level', 'created_by').get(id=user_id, role='USER')
+    except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+    if not request.user.is_admin and getattr(target_user, 'created_by', None) != request.user:
+        return Response({'error': 'You can only view account details for users created by you'}, status=status.HTTP_403_FORBIDDEN)
+
+    total_commission = ProductReview.objects.filter(
+        user=target_user,
+        status='COMPLETED'
+    ).aggregate(total=Sum('commission_earned'))['total'] or Decimal('0.00')
+    total_commission = float(total_commission)
+
+    primary_wallet = (
+        WithdrawalAccount.objects.filter(user=target_user)
+        .order_by('-is_primary', '-is_active', '-created_at')
+        .first()
+    )
+    if primary_wallet:
+        raw_net = (primary_wallet.crypto_network or '').upper()
+        wallet_currency = 'USDT' if raw_net == 'TRC20' else (raw_net if raw_net in ('USDT', 'USDC', 'ETH', 'BTC') else 'USDT')
+        wallet_network = 'TRC 20' if raw_net == 'TRC20' else raw_net
+        wallet_name = primary_wallet.crypto_wallet_name or None
+        wallet_phone = getattr(primary_wallet.user, 'phone_number', None) or None
+        wallet_address = primary_wallet.crypto_wallet_address or None
+    else:
+        wallet_name = None
+        wallet_phone = None
+        wallet_address = None
+        wallet_network = None
+        wallet_currency = None
+
+    current_stage = 0
+    available_for_daily_order = 0
+    product_range = None
+    membership = None
+    if target_user.level:
+        level = target_user.level
+        membership = level.level_name
+        min_orders = int(level.min_orders or 0)
+        available_for_daily_order = min_orders
+        pool_products = list(
+            Product.objects.filter(status='ACTIVE').order_by('position', '-created_at')[:min_orders]
+        )
+        pool_ids = [p.id for p in pool_products]
+        current_stage = ProductReview.objects.filter(
+            user=target_user,
+            product_id__in=pool_ids,
+            status='COMPLETED'
+        ).count()
+        min_pct = float(level.price_min_percent or 30)
+        max_pct = float(level.price_max_percent or 70)
+        product_range = f"{int(min_pct)}% - {int(max_pct)}%"
+    progress = f"{current_stage}/{available_for_daily_order}" if available_for_daily_order else "0/0"
+
+    def _dt(dt):
+        if dt is None:
+            return None
+        return dt.strftime("%Y-%m-%d, %H:%M:%S")
+
+    return Response({
+        'id': target_user.id,
+        'username': target_user.username,
+        'invitation_code': target_user.invitation_code or None,
+        'phone_number': target_user.phone_number or None,
+        'superior_id': target_user.created_by_id,
+        'superior_username': target_user.created_by.username if target_user.created_by else None,
+        'registration_date': _dt(target_user.date_joined),
+        'last_login': _dt(target_user.last_login),
+        'balance': float(target_user.balance),
+        'commission': total_commission,
+        'froze_amount': float(target_user.balance_frozen_amount or 0),
+        'membership': membership,
+        'credibility': '100%',
+        'account_status': 'ACTIVE' if target_user.is_active else 'INACTIVE',
+        'rob_single': 'ALLOWED',
+        'allow_withdrawal': 'ALLOWED',
+        'wallet_name': wallet_name if primary_wallet else None,
+        'wallet_phone': wallet_phone,
+        'wallet_address': wallet_address if primary_wallet else None,
+        'network_type': wallet_network if primary_wallet else None,
+        'currency': wallet_currency if primary_wallet else None,
+        'current_stage': current_stage,
+        'available_for_daily_order': available_for_daily_order,
+        'progress': progress,
+        'product_range': product_range,
     }, status=status.HTTP_200_OK)
 
 

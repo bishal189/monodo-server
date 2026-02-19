@@ -15,9 +15,12 @@ from .serializers import (
     BalanceAdjustmentSerializer,
     WithdrawalAccountSerializer,
     WithdrawalAccountCreateSerializer,
-    WithdrawalAccountUpdateSerializer
+    WithdrawalAccountUpdateSerializer,
+    WithdrawalAccountWalletModalSerializer,
+    WithdrawalAccountWalletModalUpdateSerializer,
 )
 from authentication.permissions import IsAdmin, IsNormalUser, IsAdminOrAgent
+from authentication.models import User
 
 
 class TransactionListView(generics.ListCreateAPIView):
@@ -682,10 +685,40 @@ def withdrawal_account_detail(request, account_id):
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+@api_view(['GET', 'PATCH'])
+@permission_classes([IsAdminOrAgent])
+def admin_user_wallet_primary(request, user_id):
+    try:
+        target_user = User.objects.get(id=user_id, role='USER')
+    except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+    if not request.user.is_admin and getattr(target_user, 'created_by', None) != request.user:
+        return Response({'error': 'You can only view or edit wallets for users created by you'}, status=status.HTTP_403_FORBIDDEN)
+    account = (
+        WithdrawalAccount.objects.filter(user=target_user)
+        .select_related('user')
+        .order_by('-is_primary', '-is_active', '-created_at')
+        .first()
+    )
+    if not account:
+        return Response({'error': 'No wallet found for this user'}, status=status.HTTP_404_NOT_FOUND)
+    if request.method == 'GET':
+        serializer = WithdrawalAccountWalletModalSerializer(account)
+        return Response({'wallet': serializer.data}, status=status.HTTP_200_OK)
+    serializer = WithdrawalAccountWalletModalUpdateSerializer(instance=account, data=request.data, partial=True)
+    if not serializer.is_valid():
+        errors = {f: (e[0] if isinstance(e, list) else str(e)) for f, e in serializer.errors.items()}
+        return Response({'message': 'Validation failed', 'errors': errors}, status=status.HTTP_400_BAD_REQUEST)
+    updated = serializer.save()
+    return Response({
+        'message': 'Wallet updated successfully',
+        'wallet': WithdrawalAccountWalletModalSerializer(updated).data
+    }, status=status.HTTP_200_OK)
+
+
 @api_view(['GET'])
 @permission_classes([permissions.AllowAny])
 def get_crypto_networks(request):
-    """Get available crypto network options"""
     networks = [
         {'value': choice[0], 'label': choice[1]} 
         for choice in WithdrawalAccount.CRYPTO_NETWORK_CHOICES

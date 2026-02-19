@@ -17,6 +17,7 @@ urlpatterns = [
     path('admin/user/<int:user_id>/products/', views.get_user_products_for_admin, name='get-user-products-for-admin'),
     path('admin/user/<int:user_id>/order-overview/', views.admin_user_order_overview, name='admin-user-order-overview'),
     path('admin/user/<int:user_id>/reset-continuous-orders/', views.admin_reset_continuous_orders, name='admin-reset-continuous-orders'),
+    path('admin/user/<int:user_id>/account-details/', views.admin_user_account_details, name='admin-user-account-details'),
     path('admin/user/<int:user_id>/completed-count/', views.get_user_completed_products_count, name='get-user-completed-products-count'),
     path('admin/user/<int:user_id>/level-journey-completed/', views.user_level_journey_completed, name='user-level-journey-completed'),
     path('admin/user/<int:user_id>/product/<int:product_id>/remove/', views.admin_remove_product_for_user, name='admin-remove-product-for-user'),
