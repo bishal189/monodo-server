@@ -229,8 +229,11 @@ def my_deposit(request):
 @api_view(['POST'])
 @permission_classes([IsNormalUser])
 def withdraw_amount(request):
+    if not getattr(request.user, 'allow_withdrawal', True):
+        return Response({
+            'error': 'Withdrawal is not allowed for your account.'
+        }, status=status.HTTP_403_FORBIDDEN)
     serializer = WithdrawSerializer(data=request.data, context={'user': request.user})
-    
     if not serializer.is_valid():
         errors = {}
         for field, error_list in serializer.errors.items():

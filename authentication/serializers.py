@@ -4,6 +4,7 @@ from django.contrib.auth import get_user_model
 import secrets
 import string
 from .models import User
+from level.models import Level
 
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
@@ -193,7 +194,9 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'balance_frozen_amount',
             'date_joined',
             'last_login',
-            'is_active'
+            'is_active',
+            'allow_rob_order',
+            'allow_withdrawal',
         ]
         read_only_fields = ['id', 'date_joined', 'last_login', 'role', 'created_by', 'balance', 'balance_frozen', 'balance_frozen_amount']
     
@@ -370,6 +373,141 @@ class AdminAgentEditUserSerializer(serializers.ModelSerializer):
         if new_password and len(new_password) > 0:
             instance.set_password(new_password)
         
+        instance.save()
+        return instance
+
+
+class AdminUserUpdateSerializer(serializers.ModelSerializer):
+    """Full Update User form: GET returns all fields; PATCH accepts all editable fields including passwords."""
+    level_id = serializers.PrimaryKeyRelatedField(
+        queryset=Level.objects.all(),
+        source='level', required=False, allow_null=True
+    )
+    parent_id = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.filter(role='AGENT'),
+        source='created_by', required=False, allow_null=True
+    )
+    freeze_amount = serializers.DecimalField(
+        max_digits=10, decimal_places=2, source='balance_frozen_amount',
+        required=False, allow_null=True
+    )
+    today_commission = serializers.SerializerMethodField(read_only=True)
+    matching_range = serializers.SerializerMethodField(read_only=True)
+    matching_min_percent = serializers.SerializerMethodField(read_only=True)
+    matching_max_percent = serializers.SerializerMethodField(read_only=True)
+    password = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    confirm_password = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    payment_password = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    confirm_payment_password = serializers.CharField(write_only=True, required=False, allow_blank=True)
+
+    class Meta:
+        model = User
+        fields = [
+            'id', 'username', 'level_id', 'parent_id', 'phone_number', 'email',
+            'balance', 'today_commission', 'freeze_amount', 'credibility',
+            'withdrawal_min_amount', 'withdrawal_max_amount', 'withdrawal_needed_to_complete_order',
+            'matching_range', 'matching_min_percent', 'matching_max_percent',
+            'password', 'confirm_password', 'payment_password', 'confirm_payment_password',
+            'allow_rob_order', 'allow_withdrawal', 'number_of_draws', 'winning_amount', 'custom_winning_amount',
+        ]
+        read_only_fields = ['id']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance and getattr(self.instance, 'role', None) != 'USER':
+            self.fields['parent_id'].queryset = User.objects.filter(role__in=['AGENT', 'ADMIN'])
+
+    def get_today_commission(self, obj):
+        return self.context.get('today_commission', 0)
+
+    def get_matching_range(self, obj):
+        if obj.level:
+            a = getattr(obj.level, 'price_min_percent', None)
+            b = getattr(obj.level, 'price_max_percent', None)
+            if a is not None and b is not None:
+                return f"{int(a)}% – {int(b)}%"
+        return None
+
+    def get_matching_min_percent(self, obj):
+        if obj.level:
+            a = getattr(obj.level, 'price_min_percent', None)
+            return float(a) if a is not None else None
+        return None
+
+    def get_matching_max_percent(self, obj):
+        if obj.level:
+            b = getattr(obj.level, 'price_max_percent', None)
+            return float(b) if b is not None else None
+        return None
+
+    def get_level(self, obj):
+        if obj.level:
+            return {'id': obj.level.id, 'level_name': obj.level.level_name}
+        return None
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data['level'] = self.get_level(instance)
+        data['parent_id'] = instance.created_by_id
+        data.pop('level_id', None)
+        data.pop('password', None)
+        data.pop('confirm_password', None)
+        data.pop('payment_password', None)
+        data.pop('confirm_payment_password', None)
+        return data
+
+    def validate_email(self, value):
+        user = self.instance
+        if user and User.objects.filter(email=value).exclude(pk=user.pk).exists():
+            raise serializers.ValidationError("A user with this email already exists.")
+        return value
+
+    def validate_username(self, value):
+        user = self.instance
+        if user and User.objects.filter(username=value).exclude(pk=user.pk).exists():
+            raise serializers.ValidationError("A user with this username already exists.")
+        return value
+
+    def validate_phone_number(self, value):
+        user = self.instance
+        if user and User.objects.filter(phone_number=value).exclude(pk=user.pk).exists():
+            raise serializers.ValidationError("A user with this phone number already exists.")
+        return value
+
+    def validate_credibility(self, value):
+        if value is not None and (value < 0 or value > 100):
+            raise serializers.ValidationError("Credibility must be between 0 and 100.")
+        return value
+
+    def validate(self, attrs):
+        pw = attrs.get('password', '') or ''
+        cpw = attrs.get('confirm_password', '') or ''
+        if pw or cpw:
+            if pw != cpw:
+                raise serializers.ValidationError({'confirm_password': 'Passwords do not match.'})
+            if pw:
+                try:
+                    validate_password(pw)
+                except Exception as e:
+                    raise serializers.ValidationError({'password': list(e.messages)})
+        ppw = attrs.get('payment_password', '') or ''
+        cppw = attrs.get('confirm_payment_password', '') or ''
+        if ppw or cppw:
+            if ppw != cppw:
+                raise serializers.ValidationError({'confirm_payment_password': 'Payment passwords do not match.'})
+        return attrs
+
+    def update(self, instance, validated_data):
+        validated_data.pop('confirm_password', None)
+        validated_data.pop('confirm_payment_password', None)
+        password = validated_data.pop('password', None)
+        payment_password = validated_data.pop('payment_password', None)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        if password and len(password) > 0:
+            instance.set_password(password)
+        if payment_password is not None and len(payment_password) > 0:
+            instance.withdraw_password = payment_password
         instance.save()
         return instance
 

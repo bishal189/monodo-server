@@ -90,6 +90,33 @@ class User(AbstractBaseUser, PermissionsMixin):
         blank=True,
         help_text="Shortfall when frozen (product price minus balance); shown when balance_frozen is True"
     )
+    credibility = models.PositiveSmallIntegerField(
+        default=100,
+        help_text="Credibility score 0-100"
+    )
+    withdrawal_min_amount = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+        help_text="Minimum withdrawal amount"
+    )
+    withdrawal_max_amount = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+        help_text="Maximum withdrawal amount"
+    )
+    withdrawal_needed_to_complete_order = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+        help_text="Withdrawal amount needed to complete order"
+    )
+    allow_rob_order = models.BooleanField(default=True, help_text="Whether to allow rob order")
+    allow_withdrawal = models.BooleanField(default=True, help_text="Whether to allow withdrawal")
+    number_of_draws = models.PositiveIntegerField(null=True, blank=True, help_text="Number of draws")
+    winning_amount = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+        help_text="Winning amount"
+    )
+    custom_winning_amount = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+        help_text="Custom winning amount"
+    )
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     is_superuser = models.BooleanField(default=False)

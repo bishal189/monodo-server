@@ -4,8 +4,8 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenRefreshView
 from django.utils import timezone
-from django.db.models import Q, Count
-from datetime import timedelta
+from django.db.models import Q, Count, Sum
+from datetime import timedelta, datetime
 from .models import User
 
 
@@ -100,6 +100,7 @@ from .serializers import (
     UserProfileSerializer,
     UserUpdateSerializer,
     AdminAgentEditUserSerializer,
+    AdminUserUpdateSerializer,
     AgentCreateSerializer,
     TrainingAccountCreateSerializer,
     AgentProfileUpdateSerializer
@@ -278,6 +279,15 @@ def check_user_role_view(request):
         'user_id': request.user.id,
         'username': request.user.username,
         'email': request.user.email
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def check_allow_withdrawal(request):
+    """Return whether the current user is allowed to withdraw (allow_withdrawal flag)."""
+    return Response({
+        'allow_withdrawal': getattr(request.user, 'allow_withdrawal', True)
     }, status=status.HTTP_200_OK)
 
 
@@ -613,31 +623,61 @@ def agent_deactivate_user(request, user_id):
         return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
 
 
-@api_view(['GET', 'PATCH', 'PUT'])
+@api_view(['GET', 'PATCH', 'PUT', 'DELETE'])
 @permission_classes([IsAdminOrAgent])
 def edit_user(request, user_id):
-    """
-    Get or update a user. Allowed for admin and agent.
-    Admin can edit any USER-role user. Agent can only edit users they created.
-    """
+    """Get/update a USER (member). Delete a USER or AGENT. Admin or agent; agent only for users they created; only admin can delete agents."""
+    if request.method == 'DELETE':
+        try:
+            target_user = User.objects.get(id=user_id, role__in=['USER', 'AGENT'])
+        except User.DoesNotExist:
+            return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+        if target_user.role == 'AGENT':
+            if not request.user.is_admin:
+                return Response({'error': 'Only admin can delete agents'}, status=status.HTTP_403_FORBIDDEN)
+        else:
+            if not request.user.is_admin and target_user.created_by != request.user:
+                return Response({
+                    'error': 'You can only delete users created by you'
+                }, status=status.HTTP_403_FORBIDDEN)
+        target_user.delete()
+        return Response({
+            'success': True,
+            'message': 'User deleted successfully'
+        }, status=status.HTTP_200_OK)
+
     try:
-        target_user = User.objects.get(id=user_id, role='USER')
+        target_user = User.objects.select_related('level', 'created_by').get(id=user_id, role='USER')
     except User.DoesNotExist:
         return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
 
     if not request.user.is_admin and target_user.created_by != request.user:
         return Response({
-            'error': 'You can only edit users created by you'
+            'error': 'You can only edit or delete users created by you'
         }, status=status.HTTP_403_FORBIDDEN)
 
     if request.method == 'GET':
+        from product.models import ProductReview
+        today = timezone.now().date()
+        today_start = timezone.make_aware(datetime.combine(today, datetime.min.time()))
+        today_commission = ProductReview.objects.filter(
+            user=target_user,
+            status='COMPLETED',
+            completed_at__gte=today_start
+        ).aggregate(total=Sum('commission_earned'))['total'] or 0
+        today_commission = float(today_commission)
+        serializer = AdminUserUpdateSerializer(
+            target_user,
+            context={'today_commission': today_commission}
+        )
         return Response({
-            'user': UserProfileSerializer(target_user).data
+            'user': serializer.data
         }, status=status.HTTP_200_OK)
 
-    # PATCH or PUT
     partial = request.method == 'PATCH'
-    serializer = AdminAgentEditUserSerializer(target_user, data=request.data, partial=partial)
+    serializer = AdminUserUpdateSerializer(
+        target_user, data=request.data, partial=partial
+    )
     if not serializer.is_valid():
         errors = {}
         for field, error_list in serializer.errors.items():
@@ -652,10 +692,23 @@ def edit_user(request, user_id):
         }, status=status.HTTP_400_BAD_REQUEST)
 
     updated_user = serializer.save()
+    from product.models import ProductReview
+    today = timezone.now().date()
+    today_start = timezone.make_aware(datetime.combine(today, datetime.min.time()))
+    today_commission = ProductReview.objects.filter(
+        user=updated_user,
+        status='COMPLETED',
+        completed_at__gte=today_start
+    ).aggregate(total=Sum('commission_earned'))['total'] or 0
+    today_commission = float(today_commission)
+    out = AdminUserUpdateSerializer(
+        updated_user,
+        context={'today_commission': today_commission}
+    ).data
     return Response({
         'success': True,
         'message': 'User updated successfully',
-        'user': UserProfileSerializer(updated_user).data
+        'user': out
     }, status=status.HTTP_200_OK)
 
 
