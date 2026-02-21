@@ -296,48 +296,63 @@ def get_products_by_level(request, level_id):
 
 
 def _get_dashboard_pool(user):
-    """Build product pool and next_to_do for user's level. Returns (all_products_ordered, next_to_do, pool_products, entitlements_count, completed_in_pool)."""
+    """Build product pool and next_to_do for user's level. Returns (all_products_ordered, next_to_do, pool_products, entitlements_count, completed_in_pool, product_positions). product_positions is {product_id: position}."""
     pool_products = []
     all_products_ordered = []
     next_to_do = []
     entitlements_count = 0
     completed_in_pool = 0
+    product_positions = {}
 
     if not user.level:
-        return all_products_ordered, next_to_do, pool_products, entitlements_count, completed_in_pool
+        return all_products_ordered, next_to_do, pool_products, entitlements_count, completed_in_pool, product_positions
 
     level = user.level
     min_orders = int(level.min_orders or 0)
-    all_products_qs = Product.objects.filter(status='ACTIVE').prefetch_related('reviews').order_by('price')
-    pool_products = list(all_products_qs[:min_orders])
+    level_products = list(
+        Product.objects.filter(levels=level, status='ACTIVE')
+        .prefetch_related('reviews').order_by('price')[:min_orders]
+    )
+    if len(level_products) < min_orders:
+        used_ids = {p.id for p in level_products}
+        extra = list(
+            Product.objects.filter(status='ACTIVE')
+            .exclude(id__in=used_ids)
+            .prefetch_related('reviews')
+            .order_by('price')[:min_orders - len(level_products)]
+        )
+        pool_products = level_products + extra
+    else:
+        pool_products = level_products
     entitlements_count = min_orders
 
     start_continuous = _get_start_continuous_orders_after(user) + 1
     assigned_reviews = list(ProductReview.objects.filter(
         user=user,
-        position__isnull=False,
-        position__gte=start_continuous
+        position__isnull=False
     ).select_related('product').order_by('position'))
     assigned_by_pos = {r.position: r.product for r in assigned_reviews if r.product and r.product.status == 'ACTIVE'}
+    used_product_ids = {p.id for p in assigned_by_pos.values()}
 
     combined = []
-    used_product_ids = set()
-    for i, p in enumerate(pool_products):
-        pos = i + 1
+    pool_consumed = 0
+    for pos in range(1, min_orders + 1):
         if pos in assigned_by_pos:
-            assigned_product = assigned_by_pos[pos]
-            if assigned_product.id not in used_product_ids:
-                combined.append((pos, assigned_product))
-                used_product_ids.add(assigned_product.id)
-        elif p.id not in used_product_ids:
-            combined.append((pos, p))
-            used_product_ids.add(p.id)
+            combined.append((pos, assigned_by_pos[pos]))
+        else:
+            while pool_consumed < len(pool_products):
+                p = pool_products[pool_consumed]
+                pool_consumed += 1
+                if p.id not in used_product_ids:
+                    combined.append((pos, p))
+                    used_product_ids.add(p.id)
+                    break
     for pos, prod in sorted(assigned_by_pos.items()):
-        if pos > min_orders and prod.id not in used_product_ids:
+        if pos > min_orders:
             combined.append((pos, prod))
-            used_product_ids.add(prod.id)
     combined.sort(key=lambda x: x[0])
     all_products_ordered = [p for _, p in combined]
+    product_positions = {p.id: pos for pos, p in combined}
     pool_product_ids = [p.id for p in all_products_ordered]
     completed_reviews = set(ProductReview.objects.filter(
         user=user,
@@ -347,7 +362,7 @@ def _get_dashboard_pool(user):
     completed_in_pool = len(completed_reviews)
     next_to_do = [p for p in all_products_ordered if p.id not in completed_reviews]
 
-    return all_products_ordered, next_to_do, pool_products, entitlements_count, completed_in_pool
+    return all_products_ordered, next_to_do, pool_products, entitlements_count, completed_in_pool, product_positions
 
 
 @api_view(['GET'])
@@ -366,7 +381,7 @@ def product_dashboard(request):
     ).aggregate(total=Sum('commission_earned'))['total'] or 0.00
     today_commission = float(today_commission)
 
-    all_products_ordered, next_to_do, pool_products, entitlements_count, completed_in_pool = _get_dashboard_pool(user)
+    all_products_ordered, next_to_do, pool_products, entitlements_count, completed_in_pool, _ = _get_dashboard_pool(user)
 
     if user.level:
         completed_count = completed_in_pool
@@ -394,6 +409,8 @@ def product_dashboard(request):
         'todays_commission': today_commission,
         'entitlements': entitlements_count,
         'completed': completed_count,
+        'balance_frozen': user.balance_frozen,
+        'balance_frozen_amount': float(user.balance_frozen_amount) if user.balance_frozen_amount is not None else None,
     }, status=status.HTTP_200_OK)
 
 
@@ -411,9 +428,18 @@ def product_dashboard_products(request):
     except (TypeError, ValueError):
         offset = 0
 
-    all_products_ordered, next_to_do, pool_products, entitlements_count, _ = _get_dashboard_pool(user)
-    total_products = len(next_to_do)
-    available_products = next_to_do[offset:offset + limit]
+    all_products_ordered, next_to_do, pool_products, entitlements_count, completed_in_pool, product_positions = _get_dashboard_pool(user)
+    completed_reviews = set(ProductReview.objects.filter(
+        user=user,
+        product_id__in=[p.id for p in all_products_ordered],
+        status='COMPLETED'
+    ).values_list('product_id', flat=True))
+    remaining_products = [
+        p for p in all_products_ordered
+        if p.id not in completed_reviews
+    ]
+    slice_products = remaining_products[offset:offset + limit]
+    available_products = slice_products
 
     for i, product in enumerate(available_products):
         review, _ = ProductReview.objects.get_or_create(
@@ -441,7 +467,7 @@ def product_dashboard_products(request):
     products_data = ProductDashboardSerializer(
         available_products,
         many=True,
-        context={'request': request, 'user': user}
+        context={'request': request, 'user': user, 'product_positions': product_positions}
     ).data
 
     return Response({
@@ -1013,6 +1039,16 @@ def admin_user_order_overview(request, user_id):
                     product = Product.objects.get(id=pid, status='ACTIVE')
                 except Product.DoesNotExist:
                     continue
+                ProductReview.objects.filter(
+                    user=target_user,
+                    product=product,
+                    status='COMPLETED'
+                ).update(
+                    status='PENDING',
+                    completed_at=None,
+                    commission_earned=Decimal('0.00'),
+                    agreed_price=None,
+                )
                 review, _ = ProductReview.objects.get_or_create(
                     user=target_user,
                     product=product,
@@ -1353,7 +1389,8 @@ def insert_product_at_position(request, product_id):
     Insert a product at a specific position. Optionally for a specific user (user_id in body).
     - Updates the product's global position.
     - Per user: if user_id is provided, that user's ProductReview gets use_actual_price=True
-      so only that user sees actual price; other users see normal 30-70% product.
+      and position set; if that user had already completed this product, the review is reset to
+      PENDING so the product shows again at the new position (re-insert after completion).
     """
     try:
         product = Product.objects.get(id=product_id)
@@ -1391,15 +1428,21 @@ def insert_product_at_position(request, product_id):
         if not request.user.is_admin and target_user.created_by != request.user:
             return Response({
                 'error': 'You can only insert for users created by you'
-            }, status=status.HTTP_403_FORBIDDEN)
-
+            },             status=status.HTTP_403_FORBIDDEN)
     from django.db import transaction as db_transaction
 
     with db_transaction.atomic():
         current_position = product.position
+        is_insert = current_position is None or current_position == 0
 
         if position == current_position:
             pass
+        elif is_insert:
+            Product.objects.exclude(id=product_id).filter(
+                position__gte=position
+            ).update(position=F('position') + 1)
+            product.position = position
+            product.save(update_fields=['position'])
         else:
             if position < current_position:
                 Product.objects.exclude(id=product_id).filter(
@@ -1415,6 +1458,16 @@ def insert_product_at_position(request, product_id):
             product.save(update_fields=['position'])
 
         if target_user:
+            ProductReview.objects.filter(
+                user=target_user,
+                product=product,
+                status='COMPLETED'
+            ).update(
+                status='PENDING',
+                completed_at=None,
+                commission_earned=Decimal('0.00'),
+                agreed_price=None,
+            )
             review, _ = ProductReview.objects.get_or_create(
                 user=target_user,
                 product=product,

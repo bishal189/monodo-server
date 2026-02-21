@@ -51,7 +51,7 @@ class ProductReviewAdmin(admin.ModelAdmin):
     ]
     list_filter = ['status', 'created_at', 'completed_at']
     search_fields = ['user__username', 'user__email', 'product__title', 'review_text']
-    ordering = ['-created_at']
+    ordering = ['user', 'position', '-created_at']
     readonly_fields = ['created_at']
     raw_id_fields = ['user', 'product']
     

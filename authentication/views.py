@@ -764,12 +764,14 @@ def admin_created_agents_list(request):
 @permission_classes([IsAdmin])
 def admin_all_agent_created_users(request):
     """
-    Get all users created by all agents.
-    Includes both original accounts and training accounts created by agents.
+    Get all users created by agents and by the admin.
+    Includes both original accounts and training accounts.
     Returns structured data showing relationship between original and training accounts.
     Only accessible by admins.
     """
-    queryset = User.objects.filter(created_by__role='AGENT').select_related('created_by', 'level', 'original_account').prefetch_related('training_accounts').order_by('-date_joined')
+    queryset = User.objects.filter(
+        Q(created_by__role='AGENT') | Q(created_by=request.user)
+    ).filter(role='USER').select_related('created_by', 'level', 'original_account').prefetch_related('training_accounts').order_by('-date_joined')
     
     search = request.query_params.get('search', None)
     if search:
@@ -869,7 +871,7 @@ class AgentCreateView(generics.CreateAPIView):
 
 
 @api_view(['POST'])
-@permission_classes([IsAdminOrAgent])
+@permission_classes([IsAdminOrAgent])  # Both admin and agent can create training accounts
 def create_training_account(request):
     serializer = TrainingAccountCreateSerializer(
         data=request.data,
@@ -981,7 +983,6 @@ def update_agent_profile(request, agent_id):
         serializer = AgentProfileUpdateSerializer(agent, data=request.data, partial=partial)
         
         if not serializer.is_valid():
-            print(serializer.errors,'errors')
             errors = {}
             for field, error_list in serializer.errors.items():
                 if isinstance(error_list, list):
