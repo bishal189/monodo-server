@@ -140,18 +140,12 @@ class ProductSerializer(serializers.ModelSerializer):
         """Return commission rate for the current user; frozen rate when balance or review is frozen (all levels, fallback 6%)."""
         rate = self._get_effective_commission_rate(obj)
         return float(rate) if rate is not None else None
-    
-    def validate_price(self, value):
-        """Ensure price is positive"""
-        if value < 0:
-            raise serializers.ValidationError("Price must be non-negative.")
-        return value
-    
-    def validate_title(self, value):
-        """Ensure title is not empty"""
-        if not value or not value.strip():
-            raise serializers.ValidationError("Title cannot be empty.")
-        return value.strip()
+
+
+class ProductDashboardSerializer(ProductSerializer):
+    """Minimal product for dashboard-products API."""
+    class Meta(ProductSerializer.Meta):
+        fields = ['id', 'title', 'description', 'image_url', 'price', 'effective_price', 'commission_amount', 'commission_rate', 'status']
 
 
 class ProductCreateSerializer(ProductSerializer):

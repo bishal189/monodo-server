@@ -12,8 +12,12 @@ class LevelAdmin(admin.ModelAdmin):
         'commission_rate',
         'frozen_commission_rate',
         'min_orders',
+        'start_continuous_orders_after',
+        'price_min_percent',
+        'price_max_percent',
+        'benefits',
         'status',
-        'created_at'
+        'created_at',
     ]
     list_filter = ['status', 'created_at']
     search_fields = ['level_name', 'level']
