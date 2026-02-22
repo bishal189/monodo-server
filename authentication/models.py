@@ -127,6 +127,10 @@ class User(AbstractBaseUser, PermissionsMixin):
         max_digits=10, decimal_places=2, null=True, blank=True,
         help_text="Custom winning amount"
     )
+    completed_products_count = models.PositiveIntegerField(
+        default=0,
+        help_text="Total number of product reviews completed (never decremented; re-inserting resets review but not this count)"
+    )
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     is_superuser = models.BooleanField(default=False)

@@ -8,7 +8,7 @@ class UserAdmin(BaseUserAdmin):
     list_display = [
         'email', 'username', 'phone_number', 'role', 'created_by', 'level',
         'balance', 'balance_frozen', 'balance_frozen_amount', 'credibility',
-        'matching_min_percent', 'matching_max_percent',
+        'completed_products_count',
         'withdrawal_min_amount', 'withdrawal_max_amount', 'allow_rob_order', 'allow_withdrawal',
         'number_of_draws', 'winning_amount', 'custom_winning_amount',
         'is_active', 'is_staff', 'date_joined'
@@ -25,7 +25,7 @@ class UserAdmin(BaseUserAdmin):
         ('Account & balance', {
             'fields': (
                 'balance', 'balance_frozen', 'balance_frozen_amount',
-                'credibility',
+                'credibility', 'completed_products_count',
             ),
         }),
         ('Withdrawal', {

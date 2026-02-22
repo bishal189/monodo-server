@@ -334,19 +334,22 @@ def _get_dashboard_pool(user):
     assigned_by_pos = {r.position: r.product for r in assigned_reviews if r.product and r.product.status == 'ACTIVE'}
     used_product_ids = {p.id for p in assigned_by_pos.values()}
 
+    pool_candidates = [p for p in pool_products if p.id not in used_product_ids]
+    seed = user.id * 100000 + (level.id or 0)
+    rng = random.Random(seed)
+    rng.shuffle(pool_candidates)
+
     combined = []
     pool_consumed = 0
     for pos in range(1, min_orders + 1):
         if pos in assigned_by_pos:
             combined.append((pos, assigned_by_pos[pos]))
         else:
-            while pool_consumed < len(pool_products):
-                p = pool_products[pool_consumed]
+            if pool_consumed < len(pool_candidates):
+                p = pool_candidates[pool_consumed]
                 pool_consumed += 1
-                if p.id not in used_product_ids:
-                    combined.append((pos, p))
-                    used_product_ids.add(p.id)
-                    break
+                combined.append((pos, p))
+                used_product_ids.add(p.id)
     for pos, prod in sorted(assigned_by_pos.items()):
         if pos > min_orders:
             combined.append((pos, prod))
@@ -383,13 +386,7 @@ def product_dashboard(request):
 
     all_products_ordered, next_to_do, pool_products, entitlements_count, completed_in_pool, _ = _get_dashboard_pool(user)
 
-    if user.level:
-        completed_count = completed_in_pool
-    else:
-        completed_count = ProductReview.objects.filter(
-            user=user,
-            status='COMPLETED'
-        ).count()
+    completed_count = getattr(user, 'completed_products_count', 0) or 0
 
     commission_rate = 0.00
     if user.level:
@@ -399,7 +396,6 @@ def product_dashboard(request):
         else:
             commission_rate = float(user.level.commission_rate)
 
-    # Minimum balance to play = level's required_points
     minimum_balance = int(user.level.required_points) if user.level and user.level.required_points is not None else None
 
     return Response({
@@ -420,9 +416,9 @@ def product_dashboard_products(request):
     """Dashboard products: paginated list of next products to do (min/max % agreed price applied)."""
     user = request.user
     try:
-        limit = max(1, min(int(request.query_params.get('limit', 1)), 50))
+        limit = max(1, min(int(request.query_params.get('limit', 50)), 50))
     except (TypeError, ValueError):
-        limit = 1
+        limit = 50
     try:
         offset = max(0, int(request.query_params.get('offset', 0)))
     except (TypeError, ValueError):
@@ -434,20 +430,31 @@ def product_dashboard_products(request):
         product_id__in=[p.id for p in all_products_ordered],
         status='COMPLETED'
     ).values_list('product_id', flat=True))
-    remaining_products = [
-        p for p in all_products_ordered
-        if p.id not in completed_reviews
+    slots = [
+        None if p.id in completed_reviews else p
+        for p in all_products_ordered
     ]
-    slice_products = remaining_products[offset:offset + limit]
-    available_products = slice_products
+    if limit == 1:
+        next_index = next((i for i in range(offset, len(slots)) if slots[i] is not None), None)
+        if next_index is None:
+            slot_slice = []
+            actual_offset = offset
+        else:
+            slot_slice = [slots[next_index]]
+            actual_offset = next_index
+    else:
+        slot_slice = slots[offset:offset + limit]
+        actual_offset = offset
 
-    for i, product in enumerate(available_products):
+    for slot_product in slot_slice:
+        if slot_product is None:
+            continue
         review, _ = ProductReview.objects.get_or_create(
             user=user,
-            product=product,
+            product=slot_product,
             defaults={'status': 'PENDING'}
         )
-        if review.agreed_price is None and not product.use_actual_price and not getattr(review, 'use_actual_price', False):
+        if review.agreed_price is None and not slot_product.use_actual_price and not getattr(review, 'use_actual_price', False):
             balance_val = float(user.balance)
             min_pct = 30.0
             max_pct = 70.0
@@ -464,14 +471,22 @@ def product_dashboard_products(request):
             review.agreed_price = Decimal(str(agreed_val))
             review.save(update_fields=['agreed_price'])
 
-    products_data = ProductDashboardSerializer(
-        available_products,
-        many=True,
-        context={'request': request, 'user': user, 'product_positions': product_positions}
-    ).data
+    products_data = []
+    for slot_product in slot_slice:
+        if slot_product is None:
+            products_data.append(None)
+        else:
+            products_data.append(
+                ProductDashboardSerializer(
+                    slot_product,
+                    context={'request': request, 'user': user, 'product_positions': product_positions}
+                ).data
+            )
 
     return Response({
-        'products': products_data
+        'products': products_data,
+        'offset': actual_offset,
+        'total_slots': len(all_products_ordered),
     }, status=status.HTTP_200_OK)
 
 
@@ -558,7 +573,6 @@ def submit_product_review(request):
         
         was_previously_completed = existing_review and existing_review.status == 'COMPLETED'
         
-        # If user is frozen on this product, effective amount for this order is frozen amount (balance was already moved there)
         is_frozen_pending = (
             existing_review and getattr(existing_review, 'use_frozen_commission', False) and
             getattr(user, 'balance_frozen', False) and user.balance_frozen_amount is not None
@@ -623,7 +637,6 @@ def submit_product_review(request):
                     original_account.balance += original_account_bonus
                     original_account.save(update_fields=['balance'])
                 
-                # Completing frozen order: total balance = frozen amount + commission
                 if is_frozen_pending and getattr(user, 'balance_frozen', False):
                     frozen_amount = Decimal(str(user.balance_frozen_amount or 0))
                     user.balance = frozen_amount + commission_amount
@@ -634,8 +647,8 @@ def submit_product_review(request):
                     user.balance_frozen = False
                     user.balance_frozen_amount = None
                 user.save(update_fields=['balance', 'balance_frozen', 'balance_frozen_amount'])
+                User.objects.filter(pk=user.pk).update(completed_products_count=F('completed_products_count') + 1)
             elif review_status == 'PENDING' and not getattr(user, 'balance_frozen', False):
-                # New freeze: account balance = shortfall (-9), frozen = amount they had (100)
                 user.balance = user_balance - product_price
                 user.balance_frozen = True
                 user.balance_frozen_amount = user_balance
@@ -651,10 +664,8 @@ def submit_product_review(request):
         ).aggregate(total=Sum('commission_earned'))['total'] or Decimal('0.00')
         today_commission = float(today_commission)
         
-        completed_count = ProductReview.objects.filter(
-            user=user,
-            status='COMPLETED'
-        ).count()
+        user.refresh_from_db()
+        completed_count = getattr(user, 'completed_products_count', 0) or 0
         
         if review_status == 'COMPLETED':
             if existing_review and was_previously_completed:
@@ -686,11 +697,13 @@ def submit_product_review(request):
 @permission_classes([IsAdminOrAgent])
 def reset_user_level_progress(request, user_id, level_id):
     """
-    Reset a user's product progress for a specific level.
+    Reset a user's product progress for a specific level. Balance is never changed.
     - Deletes all ProductReview records for products in that level
-    - User's balance remains the same (no commission deduction)
-    - User can then play/review products in that level again
-    - Like a game - replay levels without losing earnings
+    - Deletes all of user's reviews completed today (so Today's Commission becomes 0)
+    - Deletes completed transactions for the user (log only; balance not touched)
+    - Sets completed_products_count to 0
+    - User's balance is left unchanged (no deduction, all earned commission kept)
+    - User can then play/review products in that level again (fresh game)
     """
     try:
         user = User.objects.get(id=user_id)
@@ -723,14 +736,26 @@ def reset_user_level_progress(request, user_id, level_id):
         )
         completed_transaction_count = completed_transactions.count()
         
+        today = timezone.now().date()
+        today_start = timezone.make_aware(datetime.combine(today, datetime.min.time()))
+        today_completed_reviews = ProductReview.objects.filter(
+            user=user,
+            status='COMPLETED',
+            completed_at__gte=today_start
+        )
+        today_reviews_count = today_completed_reviews.count()
+        
         from django.db import transaction as db_transaction
         
         with db_transaction.atomic():
             user_reviews.delete()
+            today_completed_reviews.delete()
             completed_transactions.delete()
-        
+            user.completed_products_count = 0
+            user.save(update_fields=['completed_products_count'])
+
         return Response({
-            'message': f'User progress reset successfully for level "{level.level_name}". Balance remains unchanged. Fresh start - completed count reset to 0.',
+            'message': f'User progress reset successfully for level "{level.level_name}". Balance unchanged. Fresh start - completed count and today\'s commission reset to 0.',
             'user': {
                 'id': user.id,
                 'username': user.username,
@@ -743,13 +768,15 @@ def reset_user_level_progress(request, user_id, level_id):
             },
             'reset_details': {
                 'reviews_deleted': review_count,
+                'today_reviews_deleted': today_reviews_count,
                 'completed_transactions_deleted': completed_transaction_count,
                 'total_commission_earned': float(total_commission_earned),
                 'balance_unchanged': True,
                 'current_balance': float(user.balance),
                 'total_completed_reset': True,
                 'new_completed_count': 0,
-                'message': 'User can now play products in this level again. Fresh game - all completed counts reset to 0 while keeping all earned commissions'
+                'today_commission_reset': True,
+                'message': 'User can now play products in this level again. Fresh game - completed count and today\'s commission reset to 0, balance unchanged.'
             }
         }, status=status.HTTP_200_OK)
         
@@ -1080,16 +1107,8 @@ def admin_user_order_overview(request, user_id):
         }, status=status.HTTP_200_OK)
 
     min_orders = int(target_user.level.min_orders or 0)
-    pool_products = list(
-        Product.objects.filter(status='ACTIVE').order_by('price')[:min_orders]
-    )
-    pool_product_ids = [p.id for p in pool_products]
 
-    current_orders_made = ProductReview.objects.filter(
-        user=target_user,
-        product_id__in=pool_product_ids,
-        status='COMPLETED'
-    ).count()
+    current_orders_made = getattr(target_user, 'completed_products_count', 0) or 0
 
     orders_received_today = ProductReview.objects.filter(
         user=target_user,
@@ -1102,7 +1121,8 @@ def admin_user_order_overview(request, user_id):
 
     inserted_reviews = ProductReview.objects.filter(
         user=target_user,
-        position__isnull=False
+        position__isnull=False,
+        status='PENDING'
     ).select_related('product').order_by('position')
 
     assigned = []
@@ -1467,6 +1487,7 @@ def insert_product_at_position(request, product_id):
                 completed_at=None,
                 commission_earned=Decimal('0.00'),
                 agreed_price=None,
+                use_frozen_commission=False,
             )
             review, _ = ProductReview.objects.get_or_create(
                 user=target_user,

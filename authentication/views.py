@@ -640,10 +640,37 @@ def edit_user(request, user_id):
                 return Response({
                     'error': 'You can only delete users created by you'
                 }, status=status.HTTP_403_FORBIDDEN)
+        from transaction.models import Transaction
+
+        training_accounts = User.objects.filter(original_account=target_user)
+        training_count = training_accounts.count()
+        for ta in training_accounts:
+            Transaction.objects.filter(member_account=ta).delete()
+            ta.delete()
+
+        created_users = list(User.objects.filter(created_by=target_user))
+        created_count = len(created_users)
+        for child in created_users:
+            child_training = User.objects.filter(original_account=child)
+            for ct in child_training:
+                Transaction.objects.filter(member_account=ct).delete()
+                ct.delete()
+            Transaction.objects.filter(member_account=child).delete()
+            child.delete()
+
+        Transaction.objects.filter(member_account=target_user).delete()
         target_user.delete()
+        message = 'User deleted successfully'
+        if training_count or created_count:
+            parts = []
+            if created_count:
+                parts.append(f'{created_count} user(s) created by this account')
+            if training_count:
+                parts.append(f'{training_count} linked training account(s)')
+            message = f'User and {", ".join(parts)} deleted successfully'
         return Response({
             'success': True,
-            'message': 'User deleted successfully'
+            'message': message
         }, status=status.HTTP_200_OK)
 
     try:
