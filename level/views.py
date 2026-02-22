@@ -152,8 +152,12 @@ def assign_level_to_user(request):
             message = 'Level removed from user successfully'
         
         user.save()
-        
-        # Return updated user data
+
+        from product.views import reset_continuous_orders_for_user, reset_user_level_progress_impl
+        reset_continuous_orders_for_user(user)
+        if level_id is not None:
+            reset_user_level_progress_impl(user, level)
+
         from authentication.serializers import UserProfileSerializer
         return Response({
             'message': message,

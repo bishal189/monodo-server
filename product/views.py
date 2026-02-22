@@ -693,6 +693,39 @@ def submit_product_review(request):
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+def reset_user_level_progress_impl(user, level):
+    """
+    Reset user's progress for a level: completed_products_count=0, delete today's
+    completed reviews (commission), level completed reviews, completed transactions.
+    Balance unchanged. Caller must ensure permissions.
+    """
+    level_products = Product.objects.filter(levels=level)
+    product_ids = list(level_products.values_list('id', flat=True))
+    user_reviews = ProductReview.objects.filter(
+        user=user,
+        product_id__in=product_ids,
+        status='COMPLETED'
+    )
+    today = timezone.now().date()
+    today_start = timezone.make_aware(datetime.combine(today, datetime.min.time()))
+    today_completed_reviews = ProductReview.objects.filter(
+        user=user,
+        status='COMPLETED',
+        completed_at__gte=today_start
+    )
+    completed_transactions = Transaction.objects.filter(
+        member_account=user,
+        status='COMPLETED'
+    )
+    from django.db import transaction as db_transaction
+    with db_transaction.atomic():
+        user_reviews.delete()
+        today_completed_reviews.delete()
+        completed_transactions.delete()
+        user.completed_products_count = 0
+        user.save(update_fields=['completed_products_count'])
+
+
 @api_view(['POST'])
 @permission_classes([IsAdminOrAgent])
 def reset_user_level_progress(request, user_id, level_id):
@@ -708,34 +741,34 @@ def reset_user_level_progress(request, user_id, level_id):
     try:
         user = User.objects.get(id=user_id)
         level = Level.objects.get(id=level_id)
-        
+
         if not request.user.is_admin:
             if user.created_by != request.user:
                 return Response({
                     'error': 'You can only reset progress for users created by you'
                 }, status=status.HTTP_403_FORBIDDEN)
-        
+
         level_products = Product.objects.filter(levels=level)
         product_ids = level_products.values_list('id', flat=True)
-        
+
         user_reviews = ProductReview.objects.filter(
             user=user,
             product_id__in=product_ids,
             status='COMPLETED'
         )
-        
+
         total_commission_earned = user_reviews.aggregate(
             total=Sum('commission_earned')
         )['total'] or 0.00
-        
+
         review_count = user_reviews.count()
-        
+
         completed_transactions = Transaction.objects.filter(
             member_account=user,
             status='COMPLETED'
         )
         completed_transaction_count = completed_transactions.count()
-        
+
         today = timezone.now().date()
         today_start = timezone.make_aware(datetime.combine(today, datetime.min.time()))
         today_completed_reviews = ProductReview.objects.filter(
@@ -744,15 +777,8 @@ def reset_user_level_progress(request, user_id, level_id):
             completed_at__gte=today_start
         )
         today_reviews_count = today_completed_reviews.count()
-        
-        from django.db import transaction as db_transaction
-        
-        with db_transaction.atomic():
-            user_reviews.delete()
-            today_completed_reviews.delete()
-            completed_transactions.delete()
-            user.completed_products_count = 0
-            user.save(update_fields=['completed_products_count'])
+
+        reset_user_level_progress_impl(user, level)
 
         return Response({
             'message': f'User progress reset successfully for level "{level.level_name}". Balance unchanged. Fresh start - completed count and today\'s commission reset to 0.',
@@ -1565,6 +1591,24 @@ def _get_next_continuous_position(user):
     return continuous_start + count
 
 
+def reset_continuous_orders_for_user(target_user):
+    """
+    Clear continuous order assignments for a user (position and use_actual_price).
+    If user has no level, clears all ProductReviews with position set; otherwise
+    clears only position >= start_continuous_orders_after + 1.
+    Returns number of ProductReviews updated.
+    """
+    if not target_user.level:
+        return ProductReview.objects.filter(
+            user=target_user, position__isnull=False
+        ).update(position=None, use_actual_price=False)
+    continuous_start = _get_start_continuous_orders_after(target_user) + 1
+    return ProductReview.objects.filter(
+        user=target_user,
+        position__gte=continuous_start
+    ).update(position=None, use_actual_price=False)
+
+
 @api_view(['POST'])
 @permission_classes([IsAdminOrAgent])
 def admin_reset_continuous_orders(request, user_id):
@@ -1583,11 +1627,7 @@ def admin_reset_continuous_orders(request, user_id):
     if not target_user.level:
         return Response({'message': 'User has no level; no continuous orders to reset', 'user_id': target_user.id}, status=status.HTTP_200_OK)
 
-    continuous_start = _get_start_continuous_orders_after(target_user) + 1
-    updated = ProductReview.objects.filter(
-        user=target_user,
-        position__gte=continuous_start
-    ).update(position=None, use_actual_price=False)
+    updated = reset_continuous_orders_for_user(target_user)
 
     return Response({
         'message': 'Continuous orders reset successfully',
