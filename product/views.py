@@ -633,26 +633,43 @@ def submit_product_review(request):
                 if user.is_training_account and user.original_account:
                     original_account = user.original_account
                     original_account_bonus = (commission_amount * Decimal('30')) / Decimal('100')
-                    
                     original_account.balance += original_account_bonus
                     original_account.save(update_fields=['balance'])
-                
+
                 if is_frozen_pending and getattr(user, 'balance_frozen', False):
                     frozen_amount = Decimal(str(user.balance_frozen_amount or 0))
-                    user.balance = frozen_amount + commission_amount
-                    user.balance_frozen = False
-                    user.balance_frozen_amount = None
+                    continuous_start = _get_start_continuous_orders_after(user) + 1
+                    # If other manually inserted items are still PENDING, keep amount in frozen until all are done
+                    has_other_pending_inserted = ProductReview.objects.filter(
+                        user=user,
+                        status='PENDING',
+                        position__isnull=False,
+                        position__gte=continuous_start,
+                    ).exclude(product=product).exists()
+                    if has_other_pending_inserted:
+                        user.balance_frozen_amount = frozen_amount + commission_amount
+                        user.save(update_fields=['balance_frozen_amount'])
+                    else:
+                        # Release: add frozen + commission to current balance, then clear frozen
+                        user.balance = user.balance + frozen_amount + commission_amount
+                        user.balance_frozen = False
+                        user.balance_frozen_amount = None
+                        user.save(update_fields=['balance', 'balance_frozen', 'balance_frozen_amount'])
                 else:
                     user.balance += commission_amount
                     user.balance_frozen = False
                     user.balance_frozen_amount = None
-                user.save(update_fields=['balance', 'balance_frozen', 'balance_frozen_amount'])
+                    user.save(update_fields=['balance', 'balance_frozen', 'balance_frozen_amount'])
                 User.objects.filter(pk=user.pk).update(completed_products_count=F('completed_products_count') + 1)
             elif review_status == 'PENDING' and not getattr(user, 'balance_frozen', False):
                 user.balance = user_balance - product_price
                 user.balance_frozen = True
                 user.balance_frozen_amount = user_balance
                 user.save(update_fields=['balance', 'balance_frozen', 'balance_frozen_amount'])
+            elif review_status == 'PENDING' and getattr(user, 'balance_frozen', False):
+                # Already frozen (e.g. holding after first inserted item); deduct so balance shows more negative
+                user.balance = user_balance - product_price
+                user.save(update_fields=['balance'])
         
         today = timezone.now().date()
         today_start = timezone.make_aware(datetime.combine(today, datetime.min.time()))
@@ -697,7 +714,8 @@ def reset_user_level_progress_impl(user, level):
     """
     Reset user's progress for a level: completed_products_count=0, delete today's
     completed reviews (commission), level completed reviews, completed transactions.
-    Balance unchanged. Caller must ensure permissions.
+    Also clears frozen balance (balance_frozen=False, balance_frozen_amount=None).
+    Main balance unchanged. Caller must ensure permissions.
     """
     level_products = Product.objects.filter(levels=level)
     product_ids = list(level_products.values_list('id', flat=True))
@@ -723,7 +741,9 @@ def reset_user_level_progress_impl(user, level):
         today_completed_reviews.delete()
         completed_transactions.delete()
         user.completed_products_count = 0
-        user.save(update_fields=['completed_products_count'])
+        user.balance_frozen = False
+        user.balance_frozen_amount = None
+        user.save(update_fields=['completed_products_count', 'balance_frozen', 'balance_frozen_amount'])
 
 
 @api_view(['POST'])

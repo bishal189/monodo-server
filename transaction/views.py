@@ -317,9 +317,12 @@ def approve_transaction(request, transaction_id):
                         user.balance_frozen_amount = current_frozen + deposit_amount
                         pending = ProductReview.objects.filter(
                             user=user, status='PENDING', use_frozen_commission=True
-                        ).select_related('product').first()
+                        ).select_related('product').order_by('position').first()
                         if pending:
-                            price = pending.agreed_price if pending.agreed_price is not None else pending.product.price
+                            if getattr(pending, 'use_actual_price', False) or getattr(pending.product, 'use_actual_price', False):
+                                price = pending.product.price
+                            else:
+                                price = pending.agreed_price if pending.agreed_price is not None else pending.product.price
                             user.balance = user.balance_frozen_amount - Decimal(str(price))
                         user.save(update_fields=['balance_frozen_amount'] + (['balance'] if pending else []))
                     else:
@@ -480,20 +483,15 @@ def add_balance(request):
     
     try:
         with db_transaction.atomic():
+            member_account.refresh_from_db()
             old_balance = member_account.balance
             if balance_change > 0 and getattr(member_account, 'balance_frozen', False):
-                # Credit while frozen: add to frozen amount; then account balance = frozen - product_price (e.g. 110 - 109 = 1)
+                # Credit while frozen: add credit to both balance and frozen. Balance shows remainder (e.g. -678.72 + 680 = 1.28).
+                # On product completion, frozen is released and added to balance.
                 current_frozen = Decimal(str(member_account.balance_frozen_amount or 0))
                 member_account.balance_frozen_amount = current_frozen + Decimal(str(balance_change))
-                # Get pending frozen product price so balance = frozen - product_price
-                pending = ProductReview.objects.filter(
-                    user=member_account, status='PENDING', use_frozen_commission=True
-                ).select_related('product').first()
-                if pending:
-                    price = pending.agreed_price if pending.agreed_price is not None else pending.product.price
-                    product_price = Decimal(str(price))
-                    member_account.balance = member_account.balance_frozen_amount - product_price
-                member_account.save(update_fields=['balance_frozen_amount'] + (['balance'] if pending else []))
+                member_account.balance += Decimal(str(balance_change))
+                member_account.save(update_fields=['balance', 'balance_frozen_amount'])
                 new_balance = float(member_account.balance)
             else:
                 member_account.balance += balance_change
