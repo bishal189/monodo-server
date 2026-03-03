@@ -361,6 +361,11 @@ def _get_dashboard_pool(user):
     ).values_list('product_id', flat=True))
     completed_in_pool = len(completed_reviews)
     next_to_do = [p for p in all_products_ordered if p.id not in completed_reviews]
+    # Inserted items (position >= continuous_start) first by position, then pool items by position, so "next" shows re-inserted at correct position (e.g. after completing 2)
+    next_to_do.sort(key=lambda p: (
+        0 if (product_positions.get(p.id) or 0) >= start_continuous else 1,
+        product_positions.get(p.id) or 999,
+    ))
 
     return all_products_ordered, next_to_do, pool_products, entitlements_count, completed_in_pool, product_positions
 
@@ -368,7 +373,8 @@ def _get_dashboard_pool(user):
 @api_view(['GET'])
 @permission_classes([IsNormalUser])
 def product_dashboard(request):
-    """Dashboard: summary stats only (balance, commission, entitlements, completed, level, etc.). Use /dashboard-products/ for products."""
+    """Dashboard: summary stats only (balance, commission, entitlements, completed, level, etc.). Use /dashboard-products/ for products.
+    'completed' uses completed_products_count so re-inserting an item does not decrease the count; next item appears at inserted position."""
     user = request.user
     today = timezone.now().date()
     today_start = timezone.make_aware(datetime.combine(today, datetime.min.time()))
@@ -382,7 +388,6 @@ def product_dashboard(request):
     today_commission = float(today_commission)
 
     all_products_ordered, next_to_do, pool_products, entitlements_count, completed_in_pool, _ = _get_dashboard_pool(user)
-
     completed_count = getattr(user, 'completed_products_count', 0) or 0
 
     commission_rate = 0.00
@@ -422,26 +427,9 @@ def product_dashboard_products(request):
         offset = 0
 
     all_products_ordered, next_to_do, pool_products, entitlements_count, completed_in_pool, product_positions = _get_dashboard_pool(user)
-    completed_reviews = set(ProductReview.objects.filter(
-        user=user,
-        product_id__in=[p.id for p in all_products_ordered],
-        status='COMPLETED'
-    ).values_list('product_id', flat=True))
-    slots = [
-        None if p.id in completed_reviews else p
-        for p in all_products_ordered
-    ]
-    if limit == 1:
-        next_index = next((i for i in range(offset, len(slots)) if slots[i] is not None), None)
-        if next_index is None:
-            slot_slice = []
-            actual_offset = offset
-        else:
-            slot_slice = [slots[next_index]]
-            actual_offset = next_index
-    else:
-        slot_slice = slots[offset:offset + limit]
-        actual_offset = offset
+    # next_to_do is already sorted: inserted (position >= continuous_start) first by position, then pool by position
+    slot_slice = next_to_do[offset:offset + limit] if next_to_do else []
+    actual_offset = (product_positions.get(slot_slice[0].id, 1) - 1) if limit == 1 and slot_slice else offset
 
     for slot_product in slot_slice:
         if slot_product is None:
@@ -1661,8 +1649,8 @@ def admin_reset_continuous_orders(request, user_id):
 @permission_classes([IsAdminOrAgent])
 def admin_add_product_to_continuous_order(request, user_id, product_id):
     """
-    Add product to continuous order. Position = start_continuous_orders_after + 1 + count.
-    E.g. if start=8, first add -> position 9, second add -> position 10.
+    Add product to continuous order. New inserts get next slot; re-inserting an
+    already-placed (or completed) product keeps its existing position so it does not shift.
     """
     try:
         target_user = User.objects.get(id=user_id, role='USER')
@@ -1680,12 +1668,17 @@ def admin_add_product_to_continuous_order(request, user_id, product_id):
     if not target_user.level:
         return Response({'error': 'User has no level assigned'}, status=status.HTTP_400_BAD_REQUEST)
 
-    next_position = _get_next_continuous_position(target_user)
+    continuous_start = _get_start_continuous_orders_after(target_user) + 1
     review, _ = ProductReview.objects.get_or_create(
         user=target_user,
         product=product,
         defaults={'status': 'PENDING'}
     )
+    # Re-insert (e.g. same product was at 6 and completed): keep existing position so it does not become 7
+    if review.position is not None and review.position >= continuous_start:
+        position_to_use = review.position
+    else:
+        position_to_use = _get_next_continuous_position(target_user)
     update_fields = ['use_actual_price', 'position']
     if review.status == 'COMPLETED':
         review.status = 'PENDING'
@@ -1694,14 +1687,14 @@ def admin_add_product_to_continuous_order(request, user_id, product_id):
         review.agreed_price = None
         update_fields.extend(['status', 'completed_at', 'commission_earned', 'agreed_price'])
     review.use_actual_price = True
-    review.position = next_position
+    review.position = position_to_use
     review.save(update_fields=update_fields)
 
     return Response({
-        'message': f'Product added to continuous order at position {next_position}',
+        'message': f'Product added to continuous order at position {position_to_use}',
         'user_id': target_user.id,
         'product_id': product.id,
-        'position': next_position
+        'position': position_to_use
     }, status=status.HTTP_200_OK)
 
 
@@ -1709,8 +1702,8 @@ def admin_add_product_to_continuous_order(request, user_id, product_id):
 @permission_classes([IsAdminOrAgent])
 def admin_replace_next_order(request, user_id, product_id):
     """
-    Replace the product at the next continuous order slot.
-    Same position logic as Add; overwrites if a product already occupies that slot.
+    Replace the product at the next continuous order slot (or keep position when re-inserting
+    the same product). Overwrites any other product at that slot.
     """
     try:
         target_user = User.objects.get(id=user_id, role='USER')
@@ -1728,13 +1721,18 @@ def admin_replace_next_order(request, user_id, product_id):
     if not target_user.level:
         return Response({'error': 'User has no level assigned'}, status=status.HTTP_400_BAD_REQUEST)
 
-    next_position = _get_next_continuous_position(target_user)
-    ProductReview.objects.filter(user=target_user, position=next_position).exclude(product=product).update(position=None, use_actual_price=False)
+    continuous_start = _get_start_continuous_orders_after(target_user) + 1
     review, _ = ProductReview.objects.get_or_create(
         user=target_user,
         product=product,
         defaults={'status': 'PENDING'}
     )
+    # Re-insert same product: keep existing position; else use next slot
+    if review.position is not None and review.position >= continuous_start:
+        position_to_use = review.position
+    else:
+        position_to_use = _get_next_continuous_position(target_user)
+    ProductReview.objects.filter(user=target_user, position=position_to_use).exclude(product=product).update(position=None, use_actual_price=False)
     update_fields = ['use_actual_price', 'position']
     if review.status == 'COMPLETED':
         review.status = 'PENDING'
@@ -1743,12 +1741,12 @@ def admin_replace_next_order(request, user_id, product_id):
         review.agreed_price = None
         update_fields.extend(['status', 'completed_at', 'commission_earned', 'agreed_price'])
     review.use_actual_price = True
-    review.position = next_position
+    review.position = position_to_use
     review.save(update_fields=update_fields)
 
     return Response({
-        'message': f'Product set at next order position {next_position}',
+        'message': f'Product set at next order position {position_to_use}',
         'user_id': target_user.id,
         'product_id': product.id,
-        'position': next_position
+        'position': position_to_use
     }, status=status.HTTP_200_OK)
