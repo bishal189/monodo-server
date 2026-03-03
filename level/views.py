@@ -153,8 +153,7 @@ def assign_level_to_user(request):
         
         user.save()
 
-        from product.views import reset_continuous_orders_for_user, reset_user_level_progress_impl
-        reset_continuous_orders_for_user(user)
+        from product.views import reset_user_level_progress_impl
         if level_id is not None:
             reset_user_level_progress_impl(user, level)
 

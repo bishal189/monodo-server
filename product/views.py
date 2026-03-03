@@ -335,9 +335,6 @@ def _get_dashboard_pool(user):
     used_product_ids = {p.id for p in assigned_by_pos.values()}
 
     pool_candidates = [p for p in pool_products if p.id not in used_product_ids]
-    seed = user.id * 100000 + (level.id or 0)
-    rng = random.Random(seed)
-    rng.shuffle(pool_candidates)
 
     combined = []
     pool_consumed = 0
@@ -712,11 +709,12 @@ def submit_product_review(request):
 
 def reset_user_level_progress_impl(user, level):
     """
-    Reset user's progress for a level: completed_products_count=0, delete today's
-    completed reviews (commission), level completed reviews, completed transactions.
-    Also clears frozen balance (balance_frozen=False, balance_frozen_amount=None).
+    Reset user's progress for a level: clear inserted assignments (position/use_actual_price),
+    completed_products_count=0, delete today's completed reviews (commission), level
+    completed reviews, completed transactions. Also clears frozen balance.
     Main balance unchanged. Caller must ensure permissions.
     """
+    reset_continuous_orders_for_user(user)
     level_products = Product.objects.filter(levels=level)
     product_ids = list(level_products.values_list('id', flat=True))
     user_reviews = ProductReview.objects.filter(
@@ -743,7 +741,8 @@ def reset_user_level_progress_impl(user, level):
         user.completed_products_count = 0
         user.balance_frozen = False
         user.balance_frozen_amount = None
-        user.save(update_fields=['completed_products_count', 'balance_frozen', 'balance_frozen_amount'])
+        user.start_continuous_orders_after = None
+        user.save(update_fields=['completed_products_count', 'balance_frozen', 'balance_frozen_amount', 'start_continuous_orders_after'])
 
 
 @api_view(['POST'])
@@ -1064,8 +1063,8 @@ def get_user_products_for_admin(request, user_id):
 @permission_classes([IsAdminOrAgent])
 def admin_user_order_overview(request, user_id):
     """
-    GET: Order overview for a user.
-    PATCH: Save order settings (start_continuous_orders_after) to the user's level.
+    GET: Order overview for the user in the URL (user_id). All data is per-user.
+    PATCH: Save order settings for this user only: start_continuous_orders_after and assigned_products.
     """
     try:
         target_user = User.objects.get(id=user_id, role='USER')
@@ -1078,7 +1077,6 @@ def admin_user_order_overview(request, user_id):
     if request.method == 'PATCH':
         if not target_user.level:
             return Response({'error': 'User has no level assigned'}, status=status.HTTP_400_BAD_REQUEST)
-        level = target_user.level
         val = request.data.get('start_continuous_orders_after')
         if val is not None:
             try:
@@ -1087,8 +1085,8 @@ def admin_user_order_overview(request, user_id):
                     return Response({'error': 'start_continuous_orders_after must be >= 0'}, status=status.HTTP_400_BAD_REQUEST)
             except (TypeError, ValueError):
                 return Response({'error': 'start_continuous_orders_after must be a non-negative integer'}, status=status.HTTP_400_BAD_REQUEST)
-            level.start_continuous_orders_after = val
-            level.save(update_fields=['start_continuous_orders_after'])
+            target_user.start_continuous_orders_after = val
+            target_user.save(update_fields=['start_continuous_orders_after'])
 
         assigned = request.data.get('assigned_products', [])
         if assigned:
@@ -1098,7 +1096,7 @@ def admin_user_order_overview(request, user_id):
                 position__gte=start_continuous
             ).update(position=None, use_actual_price=False)
             for item in assigned:
-                pid = item.get('product_id')
+                pid = item.get('product_id') or item.get('id')
                 pos = item.get('position')
                 if pid is None or pos is None:
                     continue
@@ -1134,7 +1132,7 @@ def admin_user_order_overview(request, user_id):
         return Response({
             'message': 'Order settings saved successfully',
             'user_id': target_user.id,
-            'start_continuous_orders_after': level.start_continuous_orders_after
+            'start_continuous_orders_after': _get_start_continuous_orders_after(target_user)
         }, status=status.HTTP_200_OK)
 
     today = timezone.now().date()
@@ -1589,9 +1587,12 @@ def admin_remove_product_for_user(request, user_id, product_id):
 
 
 def _get_start_continuous_orders_after(user):
-    """Get start_continuous_orders_after from user's level, or fallback to max(0, min_orders - 10)."""
+    """Get start_continuous_orders_after for this user: per-user override if set, else level's value, else max(0, min_orders - 10)."""
     if not user or not user.level:
         return 0
+    user_val = getattr(user, 'start_continuous_orders_after', None)
+    if user_val is not None:
+        return max(0, int(user_val))
     level = user.level
     val = getattr(level, 'start_continuous_orders_after', None)
     if val is not None:
@@ -1685,9 +1686,16 @@ def admin_add_product_to_continuous_order(request, user_id, product_id):
         product=product,
         defaults={'status': 'PENDING'}
     )
+    update_fields = ['use_actual_price', 'position']
+    if review.status == 'COMPLETED':
+        review.status = 'PENDING'
+        review.completed_at = None
+        review.commission_earned = Decimal('0.00')
+        review.agreed_price = None
+        update_fields.extend(['status', 'completed_at', 'commission_earned', 'agreed_price'])
     review.use_actual_price = True
     review.position = next_position
-    review.save(update_fields=['use_actual_price', 'position'])
+    review.save(update_fields=update_fields)
 
     return Response({
         'message': f'Product added to continuous order at position {next_position}',
@@ -1727,9 +1735,16 @@ def admin_replace_next_order(request, user_id, product_id):
         product=product,
         defaults={'status': 'PENDING'}
     )
+    update_fields = ['use_actual_price', 'position']
+    if review.status == 'COMPLETED':
+        review.status = 'PENDING'
+        review.completed_at = None
+        review.commission_earned = Decimal('0.00')
+        review.agreed_price = None
+        update_fields.extend(['status', 'completed_at', 'commission_earned', 'agreed_price'])
     review.use_actual_price = True
     review.position = next_position
-    review.save(update_fields=['use_actual_price', 'position'])
+    review.save(update_fields=update_fields)
 
     return Response({
         'message': f'Product set at next order position {next_position}',

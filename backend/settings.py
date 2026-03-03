@@ -5,7 +5,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = 'django-insecure-@0aut^%e7s6a0z$do!tq=+&)_$!+aq@sydpd7s4qy_wv*nqn4s'
 DEBUG = True
-ALLOWED_HOSTS = ['localhost', '127.0.0.1']
+ALLOWED_HOSTS = [
+    'localhost',
+    '127.0.0.1',
+    'admin.momondowork.com',
+]
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -125,5 +129,17 @@ CORS_ALLOWED_ORIGINS = [
     'http://localhost:8000',
     'http://localhost:5173',
     'http://localhost:5174',
+    'https://momondowork.com',
+    'https://www.momondowork.com',
+    'https://admin.momondowork.com',
 ]
 CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'origin',
+    'x-csrftoken',
+    'x-requested-with',
+]

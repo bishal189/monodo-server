@@ -131,6 +131,11 @@ class User(AbstractBaseUser, PermissionsMixin):
         default=0,
         help_text="Total number of product reviews completed (never decremented; re-inserting resets review but not this count)"
     )
+    start_continuous_orders_after = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Per-user override for order overview: continuous orders start after this many. If null, level's value is used."
+    )
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     is_superuser = models.BooleanField(default=False)

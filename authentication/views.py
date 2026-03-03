@@ -720,8 +720,7 @@ def edit_user(request, user_id):
 
     updated_user = serializer.save()
 
-    from product.views import reset_continuous_orders_for_user, reset_user_level_progress_impl
-    reset_continuous_orders_for_user(updated_user)
+    from product.views import reset_user_level_progress_impl
     if updated_user.level_id is not None:
         reset_user_level_progress_impl(updated_user, updated_user.level)
 
