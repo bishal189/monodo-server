@@ -129,11 +129,27 @@ CORS_ALLOWED_ORIGINS = [
     'http://localhost:8000',
     'http://localhost:5173',
     'http://localhost:5174',
+    'http://127.0.0.1:3000',
+    'http://127.0.0.1:5173',
+    'http://127.0.0.1:5174',
     'https://momondowork.com',
     'https://www.momondowork.com',
     'https://admin.momondowork.com',
 ]
+# Allow any subdomain of momondowork.com (e.g. app., dashboard.) and localhost with any port
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r'^https?://(localhost|127\.0\.0\.1)(:\d+)?$',
+    r'^https?://([a-zA-Z0-9-]+\.)?momondowork\.com$',
+]
 CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_METHODS = [
+    'DELETE',
+    'GET',
+    'OPTIONS',
+    'PATCH',
+    'POST',
+    'PUT',
+]
 CORS_ALLOW_HEADERS = [
     'accept',
     'accept-encoding',
@@ -143,3 +159,4 @@ CORS_ALLOW_HEADERS = [
     'x-csrftoken',
     'x-requested-with',
 ]
+CORS_PREFLIGHT_MAX_AGE = 86400
