@@ -361,11 +361,7 @@ def _get_dashboard_pool(user):
     ).values_list('product_id', flat=True))
     completed_in_pool = len(completed_reviews)
     next_to_do = [p for p in all_products_ordered if p.id not in completed_reviews]
-    # Inserted items (position >= continuous_start) first by position, then pool items by position, so "next" shows re-inserted at correct position (e.g. after completing 2)
-    next_to_do.sort(key=lambda p: (
-        0 if (product_positions.get(p.id) or 0) >= start_continuous else 1,
-        product_positions.get(p.id) or 999,
-    ))
+    next_to_do.sort(key=lambda p: product_positions.get(p.id) or 999)
 
     return all_products_ordered, next_to_do, pool_products, entitlements_count, completed_in_pool, product_positions
 
@@ -427,7 +423,6 @@ def product_dashboard_products(request):
         offset = 0
 
     all_products_ordered, next_to_do, pool_products, entitlements_count, completed_in_pool, product_positions = _get_dashboard_pool(user)
-    # next_to_do is already sorted: inserted (position >= continuous_start) first by position, then pool by position
     slot_slice = next_to_do[offset:offset + limit] if next_to_do else []
     actual_offset = (product_positions.get(slot_slice[0].id, 1) - 1) if limit == 1 and slot_slice else offset
 
