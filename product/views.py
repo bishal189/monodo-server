@@ -552,18 +552,27 @@ def submit_product_review(request):
             product_price = Decimal(str(product.price))
         
         was_previously_completed = existing_review and existing_review.status == 'COMPLETED'
-        
+        was_already_frozen_pending = (
+            existing_review and existing_review.status == 'PENDING' and
+            getattr(existing_review, 'use_frozen_commission', False)
+        )
+        print(f"[review] product_id={product_id} user_id={user.id} was_already_frozen_pending={was_already_frozen_pending} user_balance={user_balance} product_price={product_price}")
+
         is_frozen_pending = (
             existing_review and getattr(existing_review, 'use_frozen_commission', False) and
             getattr(user, 'balance_frozen', False) and user.balance_frozen_amount is not None
         )
         if is_frozen_pending:
             effective_balance = Decimal(str(user.balance_frozen_amount))
-            review_status = 'COMPLETED' if effective_balance >= product_price else 'PENDING'
+            can_complete_with_frozen = effective_balance >= product_price and user_balance >= 0
+            review_status = 'COMPLETED' if can_complete_with_frozen else 'PENDING'
+            print(f"[review] is_frozen_pending effective_balance={effective_balance} product_price={product_price} user_balance={user_balance} can_complete={can_complete_with_frozen} review_status={review_status}")
         elif user_balance < product_price:
             review_status = 'PENDING'
+            print(f"[review] insufficient balance review_status=PENDING")
         else:
             review_status = 'COMPLETED'
+            print(f"[review] sufficient balance review_status=COMPLETED")
 
         if user.level:
             use_frozen = existing_review and getattr(existing_review, 'use_frozen_commission', False)
@@ -619,7 +628,6 @@ def submit_product_review(request):
                 if is_frozen_pending and getattr(user, 'balance_frozen', False):
                     frozen_amount = Decimal(str(user.balance_frozen_amount or 0))
                     continuous_start = _get_start_continuous_orders_after(user) + 1
-                    # If other manually inserted items are still PENDING, keep amount in frozen until all are done
                     has_other_pending_inserted = ProductReview.objects.filter(
                         user=user,
                         status='PENDING',
@@ -629,12 +637,13 @@ def submit_product_review(request):
                     if has_other_pending_inserted:
                         user.balance_frozen_amount = frozen_amount + commission_amount
                         user.save(update_fields=['balance_frozen_amount'])
+                        print(f"[review] completed frozen: kept in frozen (other pending) balance_frozen_amount={user.balance_frozen_amount}")
                     else:
-                        # Release: add frozen + commission to current balance, then clear frozen
                         user.balance = user.balance + frozen_amount + commission_amount
                         user.balance_frozen = False
                         user.balance_frozen_amount = None
                         user.save(update_fields=['balance', 'balance_frozen', 'balance_frozen_amount'])
+                        print(f"[review] completed frozen: released balance={user.balance}")
                 else:
                     user.balance += commission_amount
                     user.balance_frozen = False
@@ -646,10 +655,14 @@ def submit_product_review(request):
                 user.balance_frozen = True
                 user.balance_frozen_amount = user_balance
                 user.save(update_fields=['balance', 'balance_frozen', 'balance_frozen_amount'])
+                print(f"[review] first PENDING: deducted balance={user.balance} frozen=True")
             elif review_status == 'PENDING' and getattr(user, 'balance_frozen', False):
-                # Already frozen (e.g. holding after first inserted item); deduct so balance shows more negative
-                user.balance = user_balance - product_price
-                user.save(update_fields=['balance'])
+                if not was_already_frozen_pending:
+                    user.balance = user_balance - product_price
+                    user.save(update_fields=['balance'])
+                    print(f"[review] next item PENDING: deducted balance={user.balance}")
+                else:
+                    print(f"[review] resubmit PENDING: no balance change (was_already_frozen_pending)")
         
         today = timezone.now().date()
         today_start = timezone.make_aware(datetime.combine(today, datetime.min.time()))
