@@ -393,8 +393,12 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
     )
     today_commission = serializers.SerializerMethodField(read_only=True)
     matching_range = serializers.SerializerMethodField(read_only=True)
-    matching_min_percent = serializers.DecimalField(max_digits=5, decimal_places=2, required=False, allow_null=True)
-    matching_max_percent = serializers.DecimalField(max_digits=5, decimal_places=2, required=False, allow_null=True)
+    matching_range_min = serializers.DecimalField(
+        max_digits=5, decimal_places=2, required=False, allow_null=True, source='matching_min_percent'
+    )
+    matching_range_max = serializers.DecimalField(
+        max_digits=5, decimal_places=2, required=False, allow_null=True, source='matching_max_percent'
+    )
     password = serializers.CharField(write_only=True, required=False, allow_blank=True)
     confirm_password = serializers.CharField(write_only=True, required=False, allow_blank=True)
     payment_password = serializers.CharField(write_only=True, required=False, allow_blank=True)
@@ -406,7 +410,7 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
             'id', 'username', 'level_id', 'parent_id', 'phone_number', 'email',
             'balance', 'today_commission', 'freeze_amount', 'credibility',
             'withdrawal_min_amount', 'withdrawal_max_amount', 'withdrawal_needed_to_complete_order',
-            'matching_range', 'matching_min_percent', 'matching_max_percent',
+            'matching_range', 'matching_range_min', 'matching_range_max',
             'password', 'confirm_password', 'payment_password', 'confirm_payment_password',
             'allow_rob_order', 'allow_withdrawal', 'number_of_draws', 'winning_amount', 'custom_winning_amount',
         ]
