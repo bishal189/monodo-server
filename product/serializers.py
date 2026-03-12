@@ -36,7 +36,9 @@ class ProductSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'image_url', 'effective_price', 'review_status', 'potential_commission', 'commission_amount', 'commission_rate', 'position', 'inserted_for_user']
     
     def get_image_url(self, obj):
-        """Return full URL for the image"""
+        """Return full URL for the image (image_url field, or uploaded image)"""
+        if getattr(obj, 'image_url', None):
+            return obj.image_url
         if obj.image:
             request = self.context.get('request')
             if request:
@@ -242,7 +244,11 @@ class ProductReviewSerializer(serializers.ModelSerializer):
     
     def get_product_image_url(self, obj):
         """Return full URL for the product image"""
-        if obj.product and obj.product.image:
+        if not obj.product:
+            return None
+        if getattr(obj.product, 'image_url', None):
+            return obj.product.image_url
+        if obj.product.image:
             request = self.context.get('request')
             if request:
                 return request.build_absolute_uri(obj.product.image.url)

@@ -11,6 +11,7 @@ class Product(models.Model):
     ]
     
     image = models.ImageField(upload_to='products/', blank=True, null=True, help_text="Product image")
+    image_url = models.URLField(blank=True, null=True, max_length=500, help_text="Optional image URL (e.g. from JSON or placeholder); used when image file is not set.")
     title = models.CharField(max_length=200, db_index=True, help_text="Product title")
     description = models.TextField(blank=True, null=True, help_text="Product description")
     price = models.DecimalField(
