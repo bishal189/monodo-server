@@ -1,4 +1,3 @@
-import random
 from decimal import Decimal
 
 from rest_framework import status, generics, permissions
@@ -309,14 +308,24 @@ def _get_dashboard_pool(user):
 
     level = user.level
     min_orders = int(level.min_orders or 0)
+
+    min_pct = 30.0
+    max_pct = 70.0
+    if getattr(user, 'matching_min_percent', None) is not None and getattr(user, 'matching_max_percent', None) is not None:
+        min_pct = float(user.matching_min_percent)
+        max_pct = float(user.matching_max_percent)
+    balance_val = float(user.balance)
+    min_price = Decimal(str((min_pct / 100) * balance_val))
+    max_price = Decimal(str((max_pct / 100) * balance_val))
+
     level_products = list(
-        Product.objects.filter(levels=level, status='ACTIVE')
+        Product.objects.filter(levels=level, status='ACTIVE', price__gte=min_price, price__lte=max_price)
         .prefetch_related('reviews').order_by('price')[:min_orders]
     )
     if len(level_products) < min_orders:
         used_ids = {p.id for p in level_products}
         extra = list(
-            Product.objects.filter(status='ACTIVE')
+            Product.objects.filter(status='ACTIVE', price__gte=min_price, price__lte=max_price)
             .exclude(id__in=used_ids)
             .prefetch_related('reviews')
             .order_by('price')[:min_orders - len(level_products)]
@@ -411,7 +420,7 @@ def product_dashboard(request):
 @api_view(['GET'])
 @permission_classes([IsNormalUser])
 def product_dashboard_products(request):
-    """Dashboard products: paginated list of next products to do (min/max % agreed price applied)."""
+    """Dashboard products: paginated list of next products to do. Products are filtered by price in [min_pct, max_pct]% of user balance; no agreed-price calculation."""
     user = request.user
     try:
         limit = max(1, min(int(request.query_params.get('limit', 50)), 50))
@@ -429,27 +438,11 @@ def product_dashboard_products(request):
     for slot_product in slot_slice:
         if slot_product is None:
             continue
-        review, _ = ProductReview.objects.get_or_create(
+        ProductReview.objects.get_or_create(
             user=user,
             product=slot_product,
             defaults={'status': 'PENDING'}
         )
-        if review.agreed_price is None and not slot_product.use_actual_price and not getattr(review, 'use_actual_price', False):
-            balance_val = float(user.balance)
-            min_pct = 30.0
-            max_pct = 70.0
-            if getattr(user, 'matching_min_percent', None) is not None and getattr(user, 'matching_max_percent', None) is not None:
-                min_pct = float(user.matching_min_percent)
-                max_pct = float(user.matching_max_percent)
-            if balance_val > 0:
-                low = (min_pct / 100) * balance_val
-                high = (max_pct / 100) * balance_val
-                agreed_val = round(random.uniform(low, high), 2)
-                agreed_val = max(0.01, agreed_val)
-            else:
-                agreed_val = 0.01
-            review.agreed_price = Decimal(str(agreed_val))
-            review.save(update_fields=['agreed_price'])
 
     products_data = []
     for slot_product in slot_slice:
