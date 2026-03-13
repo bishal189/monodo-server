@@ -322,17 +322,43 @@ def _get_dashboard_pool(user):
         Product.objects.filter(levels=level, status='ACTIVE', price__gte=min_price, price__lte=max_price)
         .prefetch_related('reviews').order_by('price')[:min_orders]
     )
+    used_ids = {p.id for p in level_products}
     if len(level_products) < min_orders:
-        used_ids = {p.id for p in level_products}
-        extra = list(
+        extra_in_range = list(
             Product.objects.filter(status='ACTIVE', price__gte=min_price, price__lte=max_price)
             .exclude(id__in=used_ids)
             .prefetch_related('reviews')
             .order_by('price')[:min_orders - len(level_products)]
         )
-        pool_products = level_products + extra
+        pool_products = level_products + extra_in_range
+        used_ids |= {p.id for p in extra_in_range}
     else:
         pool_products = level_products
+
+    if len(pool_products) < min_orders:
+        needed = min_orders - len(pool_products)
+        level_fill = list(
+            Product.objects.filter(
+                levels=level, status='ACTIVE',
+                price__gte=min_price, price__lte=max_price
+            )
+            .exclude(id__in=used_ids)
+            .order_by('price')[:needed]
+        )
+        pool_products = pool_products + level_fill
+        used_ids |= {p.id for p in level_fill}
+        still_needed = min_orders - len(pool_products)
+        if still_needed > 0:
+            any_fill = list(
+                Product.objects.filter(
+                    status='ACTIVE',
+                    price__gte=min_price, price__lte=max_price
+                )
+                .exclude(id__in=used_ids)
+                .order_by('price')[:still_needed]
+            )
+            pool_products = pool_products + any_fill
+
     entitlements_count = min_orders
 
     start_continuous = _get_start_continuous_orders_after(user) + 1
@@ -432,25 +458,13 @@ def product_dashboard_products(request):
         offset = 0
 
     all_products_ordered, next_to_do, pool_products, entitlements_count, completed_in_pool, product_positions = _get_dashboard_pool(user)
+    slot_slice = next_to_do[offset:offset + limit] if next_to_do else []
+    actual_offset = (product_positions.get(slot_slice[0].id, 1) - 1) if limit == 1 and slot_slice else offset
 
-    position_param = request.query_params.get('position')
-    if position_param is not None:
-        try:
-            pos_requested = int(position_param)
-            if pos_requested >= 1:
-                for idx, p in enumerate(next_to_do):
-                    if product_positions.get(p.id) == pos_requested:
-                        slot_slice = [p]
-                        offset = idx
-                        break
-                else:
-                    slot_slice = []
-            else:
-                slot_slice = next_to_do[offset:offset + limit] if next_to_do else []
-        except (TypeError, ValueError):
-            slot_slice = next_to_do[offset:offset + limit] if next_to_do else []
-    else:
-        slot_slice = next_to_do[offset:offset + limit] if next_to_do else []
+    print(f"[dashboard-products] user_id={user.id} limit={limit} offset={offset} total_slots={len(all_products_ordered)} next_to_do_count={len(next_to_do)} slot_slice_count={len(slot_slice)}")
+    for p in slot_slice:
+        if p:
+            print(f"  position={product_positions.get(p.id)} product_id={p.id} title={p.title!r}")
 
     for slot_product in slot_slice:
         if slot_product is None:
@@ -473,14 +487,10 @@ def product_dashboard_products(request):
                 ).data
             )
 
-    completed_count = getattr(user, 'completed_products_count', 0) or 0
-
     return Response({
         'products': products_data,
-        'offset': offset,
+        'offset': actual_offset,
         'total_slots': len(all_products_ordered),
-        'completed_count': completed_count,
-        'next_to_do_count': len(next_to_do),
     }, status=status.HTTP_200_OK)
 
 
@@ -570,6 +580,7 @@ def submit_product_review(request):
             existing_review and existing_review.status == 'PENDING' and
             getattr(existing_review, 'use_frozen_commission', False)
         )
+        print(f"[review] product_id={product_id} user_id={user.id} was_already_frozen_pending={was_already_frozen_pending} user_balance={user_balance} product_price={product_price}")
 
         is_frozen_pending = (
             existing_review and getattr(existing_review, 'use_frozen_commission', False) and
@@ -579,10 +590,13 @@ def submit_product_review(request):
             effective_balance = Decimal(str(user.balance_frozen_amount))
             can_complete_with_frozen = effective_balance >= product_price and user_balance >= 0
             review_status = 'COMPLETED' if can_complete_with_frozen else 'PENDING'
+            print(f"[review] is_frozen_pending effective_balance={effective_balance} product_price={product_price} user_balance={user_balance} can_complete={can_complete_with_frozen} review_status={review_status}")
         elif user_balance < product_price:
             review_status = 'PENDING'
+            print(f"[review] insufficient balance review_status=PENDING")
         else:
             review_status = 'COMPLETED'
+            print(f"[review] sufficient balance review_status=COMPLETED")
 
         if user.level:
             use_frozen = existing_review and getattr(existing_review, 'use_frozen_commission', False)
@@ -647,11 +661,13 @@ def submit_product_review(request):
                     if has_other_pending_inserted:
                         user.balance_frozen_amount = frozen_amount + commission_amount
                         user.save(update_fields=['balance_frozen_amount'])
+                        print(f"[review] completed frozen: kept in frozen (other pending) balance_frozen_amount={user.balance_frozen_amount}")
                     else:
                         user.balance = user.balance + frozen_amount + commission_amount
                         user.balance_frozen = False
                         user.balance_frozen_amount = None
                         user.save(update_fields=['balance', 'balance_frozen', 'balance_frozen_amount'])
+                        print(f"[review] completed frozen: released balance={user.balance}")
                 else:
                     user.balance += commission_amount
                     user.balance_frozen = False
@@ -663,10 +679,14 @@ def submit_product_review(request):
                 user.balance_frozen = True
                 user.balance_frozen_amount = user_balance
                 user.save(update_fields=['balance', 'balance_frozen', 'balance_frozen_amount'])
+                print(f"[review] first PENDING: deducted balance={user.balance} frozen=True")
             elif review_status == 'PENDING' and getattr(user, 'balance_frozen', False):
                 if not was_already_frozen_pending:
                     user.balance = user_balance - product_price
                     user.save(update_fields=['balance'])
+                    print(f"[review] next item PENDING: deducted balance={user.balance}")
+                else:
+                    print(f"[review] resubmit PENDING: no balance change (was_already_frozen_pending)")
         
         today = timezone.now().date()
         today_start = timezone.make_aware(datetime.combine(today, datetime.min.time()))
@@ -1340,9 +1360,9 @@ def admin_user_account_details(request, user_id):
 @permission_classes([IsNormalUser])
 def current_user_level_journey_completed(request):
     """
-    Check if the logged-in user has completed their journey (first min_orders products by position).
-    Not level-based: pool = all ACTIVE products, first min_orders; completed = all in pool done.
-    Returns user_id and completed (true/false).
+    Check if the logged-in user has completed their level journey.
+    Uses level.min_orders and user.completed_products_count: completed when
+    completed_products_count >= min_orders. Returns user_id and completed (true/false).
     """
     target_user = request.user
     if not target_user.level:
@@ -1352,23 +1372,8 @@ def current_user_level_journey_completed(request):
         }, status=status.HTTP_200_OK)
 
     min_orders = int(target_user.level.min_orders or 0)
-    pool_products = list(
-        Product.objects.filter(status='ACTIVE').order_by('price')[:min_orders]
-    )
-    total_items = len(pool_products)
-    if total_items == 0:
-        return Response({
-            'user_id': target_user.id,
-            'completed': False
-        }, status=status.HTTP_200_OK)
-
-    pool_ids = [p.id for p in pool_products]
-    completed_count = ProductReview.objects.filter(
-        user=target_user,
-        product_id__in=pool_ids,
-        status='COMPLETED'
-    ).count()
-    journey_completed = completed_count >= total_items
+    completed_count = getattr(target_user, 'completed_products_count', 0) or 0
+    journey_completed = min_orders > 0 and completed_count >= min_orders
 
     return Response({
         'user_id': target_user.id,
@@ -1380,9 +1385,9 @@ def current_user_level_journey_completed(request):
 @permission_classes([IsAdminOrAgent])
 def user_level_journey_completed(request, user_id):
     """
-    Check if a user has completed their journey (first min_orders products by position).
-    Not level-based: pool = all ACTIVE products, first min_orders; completed = all in pool done.
-    Access: Admin can check any USER; Agent can check only users they created.
+    Check if a user has completed their level journey.
+    Uses level.min_orders and user.completed_products_count: completed when
+    completed_products_count >= min_orders. Admin can check any USER; Agent only users they created.
     """
     try:
         target_user = User.objects.get(id=user_id, role='USER')
@@ -1408,30 +1413,8 @@ def user_level_journey_completed(request, user_id):
 
     level = target_user.level
     min_orders = int(level.min_orders or 0)
-    pool_products = list(
-        Product.objects.filter(status='ACTIVE').order_by('price')[:min_orders]
-    )
-    total_items = len(pool_products)
-    if total_items == 0:
-        return Response({
-            'user_id': target_user.id,
-            'username': target_user.username,
-            'level_id': level.id,
-            'level_name': level.level_name,
-            'level_number': level.level,
-            'total_items': 0,
-            'completed_count': 0,
-            'completed': False,
-            'message': 'No products in pool (min_orders or ACTIVE products).'
-        }, status=status.HTTP_200_OK)
-
-    pool_ids = [p.id for p in pool_products]
-    completed_count = ProductReview.objects.filter(
-        user=target_user,
-        product_id__in=pool_ids,
-        status='COMPLETED'
-    ).count()
-    journey_completed = completed_count >= total_items
+    completed_count = getattr(target_user, 'completed_products_count', 0) or 0
+    journey_completed = min_orders > 0 and completed_count >= min_orders
 
     return Response({
         'user_id': target_user.id,
@@ -1439,7 +1422,7 @@ def user_level_journey_completed(request, user_id):
         'level_id': level.id,
         'level_name': level.level_name,
         'level_number': level.level,
-        'total_items': total_items,
+        'total_items': min_orders,
         'completed_count': completed_count,
         'completed': journey_completed,
         'message': 'Level journey completed.' if journey_completed else 'Level journey not yet completed.'
