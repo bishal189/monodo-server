@@ -242,9 +242,11 @@ def withdraw_amount(request):
                 errors[field] = error_list[0] if error_list else 'Invalid value'
             else:
                 errors[field] = str(error_list)
-        
+        # Top-level 'error' so clients that only display it get the real message (e.g. invalid password)
+        first_error = next((str(v) for v in errors.values()), 'Validation failed')
         return Response({
             'message': 'Validation failed',
+            'error': first_error,
             'errors': errors
         }, status=status.HTTP_400_BAD_REQUEST)
     
