@@ -729,34 +729,19 @@ def submit_product_review(request):
 
 def reset_user_level_progress_impl(user, level):
     """
-    Reset user's progress for a level: clear inserted assignments (position/use_actual_price),
-    completed_products_count=0, delete today's completed reviews (commission), level
-    completed reviews, completed transactions. Also clears frozen balance.
-    Main balance unchanged. Caller must ensure permissions.
+    Reset all of the user's product progress. Removes every ProductReview for that user
+    (any product, any status). Also deletes completed transactions and clears user
+    progress fields. Balance unchanged. Caller must ensure permissions.
     """
     reset_continuous_orders_for_user(user)
-    level_products = Product.objects.filter(levels=level)
-    product_ids = list(level_products.values_list('id', flat=True))
-    user_reviews = ProductReview.objects.filter(
-        user=user,
-        product_id__in=product_ids,
-        status='COMPLETED'
-    )
-    today = timezone.now().date()
-    today_start = timezone.make_aware(datetime.combine(today, datetime.min.time()))
-    today_completed_reviews = ProductReview.objects.filter(
-        user=user,
-        status='COMPLETED',
-        completed_at__gte=today_start
-    )
+    all_user_reviews = ProductReview.objects.filter(user=user)
     completed_transactions = Transaction.objects.filter(
         member_account=user,
         status='COMPLETED'
     )
     from django.db import transaction as db_transaction
     with db_transaction.atomic():
-        user_reviews.delete()
-        today_completed_reviews.delete()
+        all_user_reviews.delete()
         completed_transactions.delete()
         user.completed_products_count = 0
         user.balance_frozen = False
@@ -769,13 +754,11 @@ def reset_user_level_progress_impl(user, level):
 @permission_classes([IsAdminOrAgent])
 def reset_user_level_progress(request, user_id, level_id):
     """
-    Reset a user's product progress for a specific level. Balance is never changed.
-    - Deletes all ProductReview records for products in that level
-    - Deletes all of user's reviews completed today (so Today's Commission becomes 0)
+    Reset all of a user's product progress. Balance is never changed.
+    - Deletes all ProductReview records for that user (any product, any status)
     - Deletes completed transactions for the user (log only; balance not touched)
-    - Sets completed_products_count to 0
-    - User's balance is left unchanged (no deduction, all earned commission kept)
-    - User can then play/review products in that level again (fresh game)
+    - Sets completed_products_count to 0 and clears frozen/continuous order state
+    - User can play/review products again from scratch
     """
     try:
         user = User.objects.get(id=user_id)
@@ -787,20 +770,11 @@ def reset_user_level_progress(request, user_id, level_id):
                     'error': 'You can only reset progress for users created by you'
                 }, status=status.HTTP_403_FORBIDDEN)
 
-        level_products = Product.objects.filter(levels=level)
-        product_ids = level_products.values_list('id', flat=True)
-
-        user_reviews = ProductReview.objects.filter(
-            user=user,
-            product_id__in=product_ids,
-            status='COMPLETED'
-        )
-
-        total_commission_earned = user_reviews.aggregate(
+        all_user_reviews = ProductReview.objects.filter(user=user)
+        review_count = all_user_reviews.count()
+        total_commission_earned = all_user_reviews.aggregate(
             total=Sum('commission_earned')
         )['total'] or 0.00
-
-        review_count = user_reviews.count()
 
         completed_transactions = Transaction.objects.filter(
             member_account=user,
@@ -835,6 +809,7 @@ def reset_user_level_progress(request, user_id, level_id):
                 'reviews_deleted': review_count,
                 'today_reviews_deleted': today_reviews_count,
                 'completed_transactions_deleted': completed_transaction_count,
+                'all_user_reviews_deleted': True,
                 'total_commission_earned': float(total_commission_earned),
                 'balance_unchanged': True,
                 'current_balance': float(user.balance),
