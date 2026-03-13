@@ -242,7 +242,6 @@ def withdraw_amount(request):
                 errors[field] = error_list[0] if error_list else 'Invalid value'
             else:
                 errors[field] = str(error_list)
-        # Top-level 'error' so clients that only display it get the real message (e.g. invalid password)
         first_error = next((str(v) for v in errors.values()), 'Validation failed')
         return Response({
             'message': 'Validation failed',
@@ -260,15 +259,18 @@ def withdraw_amount(request):
         if withdrawal_account_id:
             withdrawal_account = WithdrawalAccount.objects.get(id=withdrawal_account_id, user=user)
         
-        transaction = Transaction.objects.create(
-            member_account=user,
-            type='WITHDRAWAL',
-            amount=amount,
-            remark=remark,
-            remark_type='PAYMENT',
-            status='PENDING',
-            withdrawal_account=withdrawal_account
-        )
+        with db_transaction.atomic():
+            transaction = Transaction.objects.create(
+                member_account=user,
+                type='WITHDRAWAL',
+                amount=amount,
+                remark=remark,
+                remark_type='PAYMENT',
+                status='PENDING',
+                withdrawal_account=withdrawal_account
+            )
+            user.balance = Decimal(str(user.balance)) - Decimal(str(amount))
+            user.save(update_fields=['balance'])
         
         return Response({
             'message': 'Withdrawal request submitted successfully. Waiting for approval.',
@@ -331,16 +333,7 @@ def approve_transaction(request, transaction_id):
                         user.balance = Decimal(str(user.balance)) + deposit_amount
                         user.save(update_fields=['balance'])
                 elif transaction.type == 'WITHDRAWAL':
-                    withdraw_amount = Decimal(str(transaction.amount))
-                    current_balance = Decimal(str(user.balance))
-                    if current_balance < withdraw_amount:
-                        transaction.status = 'FAILED'
-                        transaction.save(update_fields=['status'])
-                        return Response({
-                            'error': 'Insufficient balance. Transaction marked as failed.'
-                        }, status=status.HTTP_400_BAD_REQUEST)
-                    user.balance = current_balance - withdraw_amount
-                    user.save(update_fields=['balance'])
+                    pass
         
         return Response({
             'message': 'Transaction approved successfully',
@@ -377,6 +370,7 @@ def reject_transaction(request, transaction_id):
         
         user = transaction.member_account
         is_completed = transaction.status == 'COMPLETED'
+        is_pending_withdrawal = transaction.type == 'WITHDRAWAL' and transaction.status == 'PENDING'
         
         with db_transaction.atomic():
             if is_completed:
@@ -385,6 +379,9 @@ def reject_transaction(request, transaction_id):
                 elif transaction.type == 'WITHDRAWAL':
                     user.balance += transaction.amount
                 user.save(update_fields=['balance'])
+            elif is_pending_withdrawal:
+                user.balance = Decimal(str(user.balance)) + Decimal(str(transaction.amount))
+                user.save(update_fields=['balance'])
             
             transaction.status = 'FAILED'
             transaction.save(update_fields=['status'])
@@ -392,7 +389,7 @@ def reject_transaction(request, transaction_id):
         return Response({
             'message': 'Transaction rejected successfully',
             'transaction': TransactionSerializer(transaction).data,
-            'new_balance': float(user.balance) if is_completed else None
+            'new_balance': float(user.balance) if (is_completed or is_pending_withdrawal) else None
         }, status=status.HTTP_200_OK)
         
     except Transaction.DoesNotExist:
