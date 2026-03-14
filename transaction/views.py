@@ -447,6 +447,17 @@ def get_my_balance(request):
     }, status=status.HTTP_200_OK)
 
 
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def new_withdraw_deposit_count(request):
+    """Return count of all PENDING deposit and withdrawal transactions (for badge)."""
+    count = Transaction.objects.filter(
+        type__in=('DEPOSIT', 'WITHDRAWAL'),
+        status='PENDING'
+    ).count()
+    return Response({'count': count}, status=status.HTTP_200_OK)
+
+
 @api_view(['POST'])
 @permission_classes([IsAdminOrAgent])
 def add_balance(request):

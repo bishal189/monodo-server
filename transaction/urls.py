@@ -8,6 +8,7 @@ urlpatterns = [
     path('<int:id>/', views.TransactionDetailView.as_view(), name='transaction-detail'),
     path('my-transactions/', views.get_my_transactions, name='get-my-transactions'),
     path('my-balance/', views.get_my_balance, name='get-my-balance'),
+    path('new-withdraw-deposit-count/', views.new_withdraw_deposit_count, name='new-withdraw-deposit-count'),
     path('my-deposit/', views.my_deposit, name='my-deposit'),
     path('withdraw/', views.withdraw_amount, name='withdraw-amount'),
     path('<int:transaction_id>/approve/', views.approve_transaction, name='approve-transaction'),
