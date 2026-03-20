@@ -401,6 +401,8 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
     )
     password = serializers.CharField(write_only=True, required=False, allow_blank=True)
     confirm_password = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    new_password = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    confirm_new_password = serializers.CharField(write_only=True, required=False, allow_blank=True)
     payment_password = serializers.CharField(write_only=True, required=False, allow_blank=True)
     confirm_payment_password = serializers.CharField(write_only=True, required=False, allow_blank=True)
 
@@ -411,7 +413,8 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
             'balance', 'today_commission', 'freeze_amount', 'credibility',
             'withdrawal_min_amount', 'withdrawal_max_amount', 'withdrawal_needed_to_complete_order',
             'matching_range', 'matching_range_min', 'matching_range_max',
-            'password', 'confirm_password', 'payment_password', 'confirm_payment_password',
+            'password', 'confirm_password', 'new_password', 'confirm_new_password',
+            'payment_password', 'confirm_payment_password',
             'allow_rob_order', 'allow_withdrawal', 'number_of_draws', 'winning_amount', 'custom_winning_amount',
         ]
         read_only_fields = ['id']
@@ -443,6 +446,8 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
         data.pop('level_id', None)
         data.pop('password', None)
         data.pop('confirm_password', None)
+        data.pop('new_password', None)
+        data.pop('confirm_new_password', None)
         data.pop('payment_password', None)
         data.pop('confirm_payment_password', None)
         return data
@@ -481,6 +486,16 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
                     validate_password(pw)
                 except Exception as e:
                     raise serializers.ValidationError({'password': list(e.messages)})
+        npw = attrs.get('new_password', '') or ''
+        cnpw = attrs.get('confirm_new_password', '') or ''
+        if npw or cnpw:
+            if npw != cnpw:
+                raise serializers.ValidationError({'confirm_new_password': 'New passwords do not match.'})
+            if npw:
+                try:
+                    validate_password(npw)
+                except Exception as e:
+                    raise serializers.ValidationError({'new_password': list(e.messages)})
         ppw = attrs.get('payment_password', '') or ''
         cppw = attrs.get('confirm_payment_password', '') or ''
         if ppw or cppw:
@@ -490,13 +505,20 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         validated_data.pop('confirm_password', None)
+        validated_data.pop('confirm_new_password', None)
         validated_data.pop('confirm_payment_password', None)
         password = validated_data.pop('password', None)
+        new_password = validated_data.pop('new_password', None)
         payment_password = validated_data.pop('payment_password', None)
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
-        if password and len(password) > 0:
-            instance.set_password(password)
+        login_pw = None
+        if new_password and len(new_password) > 0:
+            login_pw = new_password
+        elif password and len(password) > 0:
+            login_pw = password
+        if login_pw:
+            instance.set_password(login_pw)
         if payment_password is not None and len(payment_password) > 0:
             instance.withdraw_password = payment_password
         instance.save()

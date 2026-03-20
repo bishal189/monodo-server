@@ -627,6 +627,12 @@ def agent_deactivate_user(request, user_id):
 @permission_classes([IsAdminOrAgent])
 def edit_user(request, user_id):
     """Get/update a USER (member). Delete a USER or AGENT. Admin or agent; agent only for users they created; only admin can delete agents."""
+    print(f"[edit_user] path={request.path} method={request.method} user_id={user_id} actor_id={request.user.id}")
+    if request.method in ('PATCH', 'PUT', 'POST'):
+        try:
+            print(f"[edit_user] body={dict(request.data)}")
+        except Exception:
+            print(f"[edit_user] body={request.data!r}")
     if request.method == 'DELETE':
         try:
             target_user = User.objects.get(id=user_id, role__in=['USER', 'AGENT'])
