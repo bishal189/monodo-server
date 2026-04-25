@@ -219,7 +219,8 @@ class ProductReviewSerializer(serializers.ModelSerializer):
     product_image_url = serializers.SerializerMethodField()
     username = serializers.CharField(source='user.username', read_only=True)
     user_email = serializers.EmailField(source='user.email', read_only=True)
-    
+    potential_commission = serializers.SerializerMethodField()
+
     class Meta:
         model = ProductReview
         fields = [
@@ -237,11 +238,54 @@ class ProductReviewSerializer(serializers.ModelSerializer):
             'position',
             'use_actual_price',
             'commission_earned',
+            'potential_commission',
             'created_at',
             'completed_at'
         ]
-        read_only_fields = ['id', 'status', 'commission_earned', 'created_at', 'completed_at']
-    
+        read_only_fields = [
+            'id', 'status', 'commission_earned', 'potential_commission', 'created_at', 'completed_at'
+        ]
+
+    def get_potential_commission(self, obj):
+        """Completed: stored commission_earned. Pending: price × rate (same rules as submit review / ProductSerializer)."""
+        from decimal import Decimal
+        if obj.status == 'COMPLETED':
+            return float(obj.commission_earned or 0)
+        product = obj.product
+        user = obj.user
+        if not product or not user:
+            return None
+        if getattr(obj, 'use_actual_price', False):
+            price = Decimal(str(product.price))
+        elif getattr(product, 'use_actual_price', False):
+            price = Decimal(str(product.price))
+        elif obj.agreed_price is not None:
+            price = Decimal(str(obj.agreed_price))
+        else:
+            price = Decimal(str(product.price))
+        level = getattr(user, 'level', None)
+        if not level:
+            return float((price * Decimal('0')) / Decimal('100'))
+        use_frozen = getattr(user, 'balance_frozen', False) or getattr(obj, 'use_frozen_commission', False)
+        if use_frozen:
+            fr = getattr(level, 'frozen_commission_rate', None)
+            rate = level.frozen_commission_rate if fr is not None else Decimal('6.00')
+        else:
+            rate = level.commission_rate
+        if rate is None:
+            return None
+        return float((price * rate) / Decimal('100'))
+
+    def to_representation(self, instance):
+        """Expose pending commission in commission_earned for API consumers that only read that field."""
+        data = super().to_representation(instance)
+        if instance.status == 'PENDING':
+            pc = self.get_potential_commission(instance)
+            if pc is not None:
+                from decimal import Decimal
+                data['commission_earned'] = str(Decimal(str(pc)).quantize(Decimal('0.01')))
+        return data
+
     def get_product_image_url(self, obj):
         """Return full URL for the product image"""
         if not obj.product:
