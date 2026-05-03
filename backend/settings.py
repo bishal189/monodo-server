@@ -29,6 +29,7 @@ INSTALLED_APPS = [
     'level',
     'product',
     'transaction',
+    'contact',
 ]
 
 MIDDLEWARE = [
