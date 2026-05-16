@@ -446,7 +446,12 @@ def product_dashboard(request):
 @api_view(['GET'])
 @permission_classes([IsNormalUser])
 def product_dashboard_products(request):
-    """Dashboard products: paginated list of next products to do. Products are filtered by price in [min_pct, max_pct]% of user balance; no agreed-price calculation."""
+    """Dashboard products: next products to do (price band vs balance).
+
+    Query: limit (default 50, max 50), offset (0-based index into pending queue next_to_do).
+    Optional position: 1-based dashboard slot; when set, slice starts at the pending product
+    for that slot (if that slot is not pending, products may be empty). position overrides offset.
+    """
     user = request.user
     try:
         limit = max(1, min(int(request.query_params.get('limit', 50)), 50))
@@ -457,9 +462,34 @@ def product_dashboard_products(request):
     except (TypeError, ValueError):
         offset = 0
 
+    position_raw = request.query_params.get('position')
+    position = None
+    if position_raw is not None and str(position_raw).strip() != '':
+        try:
+            position = int(position_raw)
+        except (TypeError, ValueError):
+            position = None
+
     all_products_ordered, next_to_do, pool_products, entitlements_count, completed_in_pool, product_positions = _get_dashboard_pool(user)
-    slot_slice = next_to_do[offset:offset + limit] if next_to_do else []
-    actual_offset = (product_positions.get(slot_slice[0].id, 1) - 1) if limit == 1 and slot_slice else offset
+
+    resolved_offset = offset
+    if position is not None and position >= 1:
+        if next_to_do:
+            idx = next(
+                (i for i, p in enumerate(next_to_do) if product_positions.get(p.id) == position),
+                None,
+            )
+            resolved_offset = idx if idx is not None else len(next_to_do)
+        else:
+            resolved_offset = 0
+
+    slot_slice = next_to_do[resolved_offset:resolved_offset + limit] if next_to_do else []
+    if limit == 1 and slot_slice:
+        actual_offset = product_positions.get(slot_slice[0].id, 1) - 1
+    elif limit == 1 and not slot_slice and position is not None and position >= 1:
+        actual_offset = position - 1
+    else:
+        actual_offset = resolved_offset
 
     for slot_product in slot_slice:
         if slot_product is None:
