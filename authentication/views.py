@@ -720,10 +720,6 @@ def edit_user(request, user_id):
 
     updated_user = serializer.save()
 
-    from product.views import reset_user_level_progress_impl
-    if updated_user.level_id is not None:
-        reset_user_level_progress_impl(updated_user, updated_user.level)
-
     from product.models import ProductReview
     today = timezone.now().date()
     today_start = timezone.make_aware(datetime.combine(today, datetime.min.time()))

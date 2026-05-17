@@ -294,21 +294,8 @@ def get_products_by_level(request, level_id):
         }, status=status.HTTP_404_NOT_FOUND)
 
 
-def _get_dashboard_pool(user):
-    """Build product pool and next_to_do for user's level. Returns (all_products_ordered, next_to_do, pool_products, entitlements_count, completed_in_pool, product_positions). product_positions is {product_id: position}."""
-    pool_products = []
-    all_products_ordered = []
-    next_to_do = []
-    entitlements_count = 0
-    completed_in_pool = 0
-    product_positions = {}
-
-    if not user.level:
-        return all_products_ordered, next_to_do, pool_products, entitlements_count, completed_in_pool, product_positions
-
-    level = user.level
-    min_orders = int(level.min_orders or 0)
-
+def _dashboard_price_band(user):
+    """Min/max product price from user balance and matching % (default 30–70)."""
     min_pct = 30.0
     max_pct = 70.0
     if getattr(user, 'matching_min_percent', None) is not None and getattr(user, 'matching_max_percent', None) is not None:
@@ -317,88 +304,72 @@ def _get_dashboard_pool(user):
     balance_val = float(user.balance)
     min_price = Decimal(str((min_pct / 100) * balance_val))
     max_price = Decimal(str((max_pct / 100) * balance_val))
+    return min_price, max_price
 
-    level_products = list(
-        Product.objects.filter(levels=level, status='ACTIVE', price__gte=min_price, price__lte=max_price)
-        .prefetch_related('reviews').order_by('price')[:min_orders]
+
+def _get_dashboard_pool(user):
+    """Ordered slots: price-band products (cheapest first) + inserts at position; pending = not completed."""
+    empty = ([], [], [], 0, 0, {})
+    if not user.level:
+        return empty
+
+    level = user.level
+    min_orders = int(level.min_orders or 0)
+    min_price, max_price = _dashboard_price_band(user)
+
+    band_products = list(
+        Product.objects.filter(
+            status='ACTIVE',
+            price__gte=min_price,
+            price__lte=max_price,
+        ).order_by('price')
     )
-    used_ids = {p.id for p in level_products}
-    if len(level_products) < min_orders:
-        extra_in_range = list(
-            Product.objects.filter(status='ACTIVE', price__gte=min_price, price__lte=max_price)
-            .exclude(id__in=used_ids)
-            .prefetch_related('reviews')
-            .order_by('price')[:min_orders - len(level_products)]
-        )
-        pool_products = level_products + extra_in_range
-        used_ids |= {p.id for p in extra_in_range}
-    else:
-        pool_products = level_products
 
-    if len(pool_products) < min_orders:
-        needed = min_orders - len(pool_products)
-        level_fill = list(
-            Product.objects.filter(
-                levels=level, status='ACTIVE',
-                price__gte=min_price, price__lte=max_price
-            )
-            .exclude(id__in=used_ids)
-            .order_by('price')[:needed]
-        )
-        pool_products = pool_products + level_fill
-        used_ids |= {p.id for p in level_fill}
-        still_needed = min_orders - len(pool_products)
-        if still_needed > 0:
-            any_fill = list(
-                Product.objects.filter(
-                    status='ACTIVE',
-                    price__gte=min_price, price__lte=max_price
-                )
-                .exclude(id__in=used_ids)
-                .order_by('price')[:still_needed]
-            )
-            pool_products = pool_products + any_fill
+    assigned_by_pos = {}
+    for review in ProductReview.objects.filter(
+        user=user, position__isnull=False
+    ).select_related('product').order_by('position'):
+        if review.product and review.product.status == 'ACTIVE':
+            assigned_by_pos[review.position] = review.product
 
-    entitlements_count = min_orders
+    assigned_ids = {p.id for p in assigned_by_pos.values()}
+    band_queue = [p for p in band_products if p.id not in assigned_ids]
 
-    start_continuous = _get_start_continuous_orders_after(user) + 1
-    assigned_reviews = list(ProductReview.objects.filter(
-        user=user,
-        position__isnull=False
-    ).select_related('product').order_by('position'))
-    assigned_by_pos = {r.position: r.product for r in assigned_reviews if r.product and r.product.status == 'ACTIVE'}
-    used_product_ids = {p.id for p in assigned_by_pos.values()}
-
-    pool_candidates = [p for p in pool_products if p.id not in used_product_ids]
+    slot_count = min_orders
+    if assigned_by_pos:
+        slot_count = max(slot_count, max(assigned_by_pos.keys()))
 
     combined = []
-    pool_consumed = 0
-    for pos in range(1, min_orders + 1):
+    band_idx = 0
+    for pos in range(1, slot_count + 1):
         if pos in assigned_by_pos:
             combined.append((pos, assigned_by_pos[pos]))
-        else:
-            if pool_consumed < len(pool_candidates):
-                p = pool_candidates[pool_consumed]
-                pool_consumed += 1
-                combined.append((pos, p))
-                used_product_ids.add(p.id)
-    for pos, prod in sorted(assigned_by_pos.items()):
-        if pos > min_orders:
-            combined.append((pos, prod))
-    combined.sort(key=lambda x: x[0])
-    all_products_ordered = [p for _, p in combined]
-    product_positions = {p.id: pos for pos, p in combined}
-    pool_product_ids = [p.id for p in all_products_ordered]
-    completed_reviews = set(ProductReview.objects.filter(
-        user=user,
-        product_id__in=pool_product_ids,
-        status='COMPLETED'
-    ).values_list('product_id', flat=True))
-    completed_in_pool = len(completed_reviews)
-    next_to_do = [p for p in all_products_ordered if p.id not in completed_reviews]
-    next_to_do.sort(key=lambda p: product_positions.get(p.id) or 999)
+        elif band_idx < len(band_queue):
+            combined.append((pos, band_queue[band_idx]))
+            band_idx += 1
 
-    return all_products_ordered, next_to_do, pool_products, entitlements_count, completed_in_pool, product_positions
+    product_positions = {p.id: pos for pos, p in combined}
+    all_products_ordered = [p for _, p in combined]
+    product_ids = [p.id for p in all_products_ordered]
+
+    completed_ids = set(
+        ProductReview.objects.filter(
+            user=user,
+            product_id__in=product_ids,
+            status='COMPLETED',
+        ).values_list('product_id', flat=True)
+    )
+    completed_in_pool = len(completed_ids)
+    next_to_do = [p for p in all_products_ordered if p.id not in completed_ids]
+
+    return (
+        all_products_ordered,
+        next_to_do,
+        band_products,
+        min_orders,
+        completed_in_pool,
+        product_positions,
+    )
 
 
 @api_view(['GET'])
@@ -446,11 +417,11 @@ def product_dashboard(request):
 @api_view(['GET'])
 @permission_classes([IsNormalUser])
 def product_dashboard_products(request):
-    """Dashboard products: next products to do (price band vs balance).
+    """Next dashboard product(s): price band vs balance, inserts at fixed slot numbers.
 
-    Query: limit (default 50, max 50), offset (0-based index into pending queue next_to_do).
-    Optional position: 1-based dashboard slot; when set, slice starts at the pending product
-    for that slot (if that slot is not pending, products may be empty). position overrides offset.
+    Query: limit (default 50, max 50).
+    offset: 0-based index into pending queue (default 0 = next to do).
+    position: optional slot number; if that slot is already done, returns the next pending product instead.
     """
     user = request.user
     try:
@@ -462,34 +433,33 @@ def product_dashboard_products(request):
     except (TypeError, ValueError):
         offset = 0
 
-    position_raw = request.query_params.get('position')
     position = None
+    position_raw = request.query_params.get('position')
     if position_raw is not None and str(position_raw).strip() != '':
         try:
             position = int(position_raw)
         except (TypeError, ValueError):
             position = None
 
-    all_products_ordered, next_to_do, pool_products, entitlements_count, completed_in_pool, product_positions = _get_dashboard_pool(user)
+    all_products_ordered, next_to_do, _, _, _, product_positions = _get_dashboard_pool(user)
 
-    resolved_offset = offset
-    if position is not None and position >= 1:
-        if next_to_do:
-            idx = next(
-                (i for i, p in enumerate(next_to_do) if product_positions.get(p.id) == position),
-                None,
-            )
-            resolved_offset = idx if idx is not None else len(next_to_do)
-        else:
-            resolved_offset = 0
-
-    slot_slice = next_to_do[resolved_offset:resolved_offset + limit] if next_to_do else []
-    if limit == 1 and slot_slice:
-        actual_offset = product_positions.get(slot_slice[0].id, 1) - 1
-    elif limit == 1 and not slot_slice and position is not None and position >= 1:
-        actual_offset = position - 1
+    if not next_to_do:
+        slot_slice = []
+        actual_offset = 0
+    elif position is not None and position >= 1:
+        idx = next(
+            (i for i, p in enumerate(next_to_do) if product_positions.get(p.id) == position),
+            None,
+        )
+        resolved_offset = idx if idx is not None else 0
+        slot_slice = next_to_do[resolved_offset:resolved_offset + limit]
+        actual_offset = product_positions.get(slot_slice[0].id, 1) - 1 if slot_slice else 0
     else:
-        actual_offset = resolved_offset
+        resolved_offset = min(offset, len(next_to_do) - 1) if limit == 1 else offset
+        slot_slice = next_to_do[resolved_offset:resolved_offset + limit]
+        actual_offset = (
+            product_positions.get(slot_slice[0].id, 1) - 1 if limit == 1 and slot_slice else resolved_offset
+        )
 
     for slot_product in slot_slice:
         if slot_product is None:
