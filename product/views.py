@@ -1568,15 +1568,64 @@ def _get_start_continuous_orders_after(user):
     return max(0, min_orders - 10)
 
 
+def _continuous_start_position(user):
+    return _get_start_continuous_orders_after(user) + 1
+
+
 def _get_next_continuous_position(user):
-    """Next position for Add/Replace = start_continuous_orders_after + 1 + count of products with position >= that."""
-    start = _get_start_continuous_orders_after(user)
-    continuous_start = start + 1
+    """Next empty slot after existing continuous assignments."""
+    continuous_start = _continuous_start_position(user)
     count = ProductReview.objects.filter(
         user=user,
-        position__gte=continuous_start
+        position__gte=continuous_start,
     ).count()
     return continuous_start + count
+
+
+def _get_oldest_continuous_assignment(user):
+    """
+    Earliest continuous-order assignment (by review created_at).
+    Returns (position, review) or (None, None).
+    """
+    continuous_start = _continuous_start_position(user)
+    review = (
+        ProductReview.objects.filter(
+            user=user,
+            position__isnull=False,
+            position__gte=continuous_start,
+        )
+        .select_related('product')
+        .order_by('created_at')
+        .first()
+    )
+    if not review:
+        return None, None
+    return review.position, review
+
+
+def _assign_product_at_continuous_position(target_user, product, position_to_use):
+    """Place product at position; clear any other review at that slot."""
+    ProductReview.objects.filter(
+        user=target_user,
+        position=position_to_use,
+    ).exclude(product=product).update(position=None, use_actual_price=False)
+
+    review, _ = ProductReview.objects.get_or_create(
+        user=target_user,
+        product=product,
+        defaults={'status': 'PENDING'},
+    )
+    update_fields = ['use_actual_price', 'position']
+    if review.status == 'COMPLETED':
+        review.status = 'PENDING'
+        review.completed_at = None
+        review.commission_earned = Decimal('0.00')
+        review.agreed_price = None
+        update_fields.extend(['status', 'completed_at', 'commission_earned', 'agreed_price'])
+    review.use_actual_price = True
+    review.position = position_to_use
+    review.save(update_fields=update_fields)
+    return review
 
 
 def reset_continuous_orders_for_user(target_user):
@@ -1647,43 +1696,30 @@ def admin_add_product_to_continuous_order(request, user_id, product_id):
     if not target_user.level:
         return Response({'error': 'User has no level assigned'}, status=status.HTTP_400_BAD_REQUEST)
 
-    continuous_start = _get_start_continuous_orders_after(target_user) + 1
+    continuous_start = _continuous_start_position(target_user)
     review, _ = ProductReview.objects.get_or_create(
         user=target_user,
         product=product,
-        defaults={'status': 'PENDING'}
+        defaults={'status': 'PENDING'},
     )
-    # Re-insert (e.g. same product was at 6 and completed): keep existing position so it does not become 7
     if review.position is not None and review.position >= continuous_start:
         position_to_use = review.position
     else:
         position_to_use = _get_next_continuous_position(target_user)
-    update_fields = ['use_actual_price', 'position']
-    if review.status == 'COMPLETED':
-        review.status = 'PENDING'
-        review.completed_at = None
-        review.commission_earned = Decimal('0.00')
-        review.agreed_price = None
-        update_fields.extend(['status', 'completed_at', 'commission_earned', 'agreed_price'])
-    review.use_actual_price = True
-    review.position = position_to_use
-    review.save(update_fields=update_fields)
+    _assign_product_at_continuous_position(target_user, product, position_to_use)
 
     return Response({
         'message': f'Product added to continuous order at position {position_to_use}',
         'user_id': target_user.id,
         'product_id': product.id,
-        'position': position_to_use
+        'position': position_to_use,
     }, status=status.HTTP_200_OK)
 
 
 @api_view(['POST'])
 @permission_classes([IsAdminOrAgent])
 def admin_replace_next_order(request, user_id, product_id):
-    """
-    Replace the product at the next continuous order slot (or keep position when re-inserting
-    the same product). Overwrites any other product at that slot.
-    """
+    """Replace earliest continuous-order slot with this product; first slot if none assigned."""
     try:
         target_user = User.objects.get(id=user_id, role='USER')
     except User.DoesNotExist:
@@ -1700,32 +1736,12 @@ def admin_replace_next_order(request, user_id, product_id):
     if not target_user.level:
         return Response({'error': 'User has no level assigned'}, status=status.HTTP_400_BAD_REQUEST)
 
-    continuous_start = _get_start_continuous_orders_after(target_user) + 1
-    review, _ = ProductReview.objects.get_or_create(
-        user=target_user,
-        product=product,
-        defaults={'status': 'PENDING'}
-    )
-    # Re-insert same product: keep existing position; else use next slot
-    if review.position is not None and review.position >= continuous_start:
-        position_to_use = review.position
-    else:
-        position_to_use = _get_next_continuous_position(target_user)
-    ProductReview.objects.filter(user=target_user, position=position_to_use).exclude(product=product).update(position=None, use_actual_price=False)
-    update_fields = ['use_actual_price', 'position']
-    if review.status == 'COMPLETED':
-        review.status = 'PENDING'
-        review.completed_at = None
-        review.commission_earned = Decimal('0.00')
-        review.agreed_price = None
-        update_fields.extend(['status', 'completed_at', 'commission_earned', 'agreed_price'])
-    review.use_actual_price = True
-    review.position = position_to_use
-    review.save(update_fields=update_fields)
+    position_to_use, _ = _get_oldest_continuous_assignment(target_user)
+    if position_to_use is None:
+        position_to_use = _continuous_start_position(target_user)
+
+    _assign_product_at_continuous_position(target_user, product, position_to_use)
 
     return Response({
-        'message': f'Product set at next order position {position_to_use}',
-        'user_id': target_user.id,
-        'product_id': product.id,
-        'position': position_to_use
+        'message': 'Item has been replaced.',
     }, status=status.HTTP_200_OK)
