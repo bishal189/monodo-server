@@ -405,6 +405,8 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
     confirm_new_password = serializers.CharField(write_only=True, required=False, allow_blank=True)
     payment_password = serializers.CharField(write_only=True, required=False, allow_blank=True)
     confirm_payment_password = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    login_password = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    confirm_login_password = serializers.CharField(write_only=True, required=False, allow_blank=True)
 
     class Meta:
         model = User
@@ -414,6 +416,7 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
             'withdrawal_min_amount', 'withdrawal_max_amount', 'withdrawal_needed_to_complete_order',
             'matching_range', 'matching_range_min', 'matching_range_max',
             'password', 'confirm_password', 'new_password', 'confirm_new_password',
+            'login_password', 'confirm_login_password',
             'payment_password', 'confirm_payment_password',
             'allow_rob_order', 'allow_withdrawal', 'number_of_draws', 'winning_amount', 'custom_winning_amount',
         ]
@@ -450,6 +453,8 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
         data.pop('confirm_new_password', None)
         data.pop('payment_password', None)
         data.pop('confirm_payment_password', None)
+        data.pop('login_password', None)
+        data.pop('confirm_login_password', None)
         return data
 
     def validate_email(self, value):
@@ -501,20 +506,34 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
         if ppw or cppw:
             if ppw != cppw:
                 raise serializers.ValidationError({'confirm_payment_password': 'Payment passwords do not match.'})
+        lpw = attrs.get('login_password', '') or ''
+        clpw = attrs.get('confirm_login_password', '') or ''
+        if lpw or clpw:
+            if lpw != clpw:
+                raise serializers.ValidationError({'confirm_login_password': 'Login passwords do not match.'})
+            if lpw:
+                try:
+                    validate_password(lpw)
+                except Exception as e:
+                    raise serializers.ValidationError({'login_password': list(e.messages)})
         return attrs
 
     def update(self, instance, validated_data):
         validated_data.pop('confirm_password', None)
         validated_data.pop('confirm_new_password', None)
         validated_data.pop('confirm_payment_password', None)
-        password = validated_data.pop('password', None)
-        new_password = validated_data.pop('new_password', None)
+        validated_data.pop('confirm_login_password', None)
+        password = validated_data.pop('password', None) or ''
+        new_password = validated_data.pop('new_password', None) or ''
+        login_password = validated_data.pop('login_password', None) or ''
         payment_password = validated_data.pop('payment_password', None)
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         login_pw = None
         if new_password and len(new_password) > 0:
             login_pw = new_password
+        elif login_password and len(login_password) > 0:
+            login_pw = login_password
         elif password and len(password) > 0:
             login_pw = password
         if login_pw:

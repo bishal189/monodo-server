@@ -21,6 +21,8 @@ from authentication.models import User
 from level.models import Level
 from transaction.models import Transaction, WithdrawalAccount
 
+MIN_ASSIGNMENT_POSITION = 1
+
 
 class ProductListView(generics.ListCreateAPIView):
     """
@@ -1094,10 +1096,9 @@ def admin_user_order_overview(request, user_id):
 
         assigned = request.data.get('assigned_products', [])
         if assigned:
-            start_continuous = _get_start_continuous_orders_after(target_user) + 1
             ProductReview.objects.filter(
                 user=target_user,
-                position__gte=start_continuous
+                position__isnull=False,
             ).update(position=None, use_actual_price=False)
             for item in assigned:
                 pid = item.get('product_id') or item.get('id')
@@ -1106,7 +1107,7 @@ def admin_user_order_overview(request, user_id):
                     continue
                 try:
                     pos = int(pos)
-                    if pos < start_continuous:
+                    if pos < MIN_ASSIGNMENT_POSITION:
                         continue
                 except (TypeError, ValueError):
                     continue
@@ -1572,14 +1573,20 @@ def _continuous_start_position(user):
     return _get_start_continuous_orders_after(user) + 1
 
 
-def _get_next_continuous_position(user):
-    """Next empty slot after existing continuous assignments."""
-    continuous_start = _continuous_start_position(user)
-    count = ProductReview.objects.filter(
-        user=user,
-        position__gte=continuous_start,
-    ).count()
-    return continuous_start + count
+def _parse_assignment_position_from_request(data):
+    """Position for add from request body. Any integer >= 1. Returns (position, error_message)."""
+    if data is None:
+        return None, 'Position is required.'
+    raw = data.get('position')
+    if raw is None or (isinstance(raw, str) and not str(raw).strip()):
+        return None, 'Position is required.'
+    try:
+        position = int(raw)
+    except (TypeError, ValueError):
+        return None, 'Position must be a valid integer.'
+    if position < MIN_ASSIGNMENT_POSITION:
+        return None, f'Position must be at least {MIN_ASSIGNMENT_POSITION}.'
+    return position, None
 
 
 def _get_oldest_continuous_assignment(user):
@@ -1676,10 +1683,7 @@ def admin_reset_continuous_orders(request, user_id):
 @api_view(['POST', 'PATCH'])
 @permission_classes([IsAdminOrAgent])
 def admin_add_product_to_continuous_order(request, user_id, product_id):
-    """
-    Add product to continuous order. New inserts get next slot; re-inserting an
-    already-placed (or completed) product keeps its existing position so it does not shift.
-    """
+    """Add product to continuous order at position from request body."""
     try:
         target_user = User.objects.get(id=user_id, role='USER')
     except User.DoesNotExist:
@@ -1696,22 +1700,14 @@ def admin_add_product_to_continuous_order(request, user_id, product_id):
     if not target_user.level:
         return Response({'error': 'User has no level assigned'}, status=status.HTTP_400_BAD_REQUEST)
 
-    continuous_start = _continuous_start_position(target_user)
-    review, _ = ProductReview.objects.get_or_create(
-        user=target_user,
-        product=product,
-        defaults={'status': 'PENDING'},
-    )
-    if review.position is not None and review.position >= continuous_start:
-        position_to_use = review.position
-    else:
-        position_to_use = _get_next_continuous_position(target_user)
+    position_to_use, position_error = _parse_assignment_position_from_request(request.data)
+    if position_error:
+        return Response({'error': position_error}, status=status.HTTP_400_BAD_REQUEST)
+
     _assign_product_at_continuous_position(target_user, product, position_to_use)
 
     return Response({
-        'message': f'Product added to continuous order at position {position_to_use}',
-        'user_id': target_user.id,
-        'product_id': product.id,
+        'message': 'Item has been added.',
         'position': position_to_use,
     }, status=status.HTTP_200_OK)
 
