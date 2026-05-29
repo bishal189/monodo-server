@@ -295,7 +295,7 @@ def get_products_by_level(request, level_id):
 
 
 def _dashboard_price_band(user):
-    """Min/max product price from user balance and matching % (default 30–70)."""
+    """Price band from balance × matching % (default 30–70)."""
     min_pct = 30.0
     max_pct = 70.0
     if getattr(user, 'matching_min_percent', None) is not None and getattr(user, 'matching_max_percent', None) is not None:
@@ -307,76 +307,112 @@ def _dashboard_price_band(user):
     return min_price, max_price
 
 
-def _get_dashboard_pool(user):
-    """Ordered slots: price-band products (cheapest first) + inserts at position; pending = not completed."""
-    empty = ([], [], [], 0, 0, {})
+def _products_in_price_band(user):
+    """Active products in the user's price band."""
     if not user.level:
-        return empty
-
-    level = user.level
-    min_orders = int(level.min_orders or 0)
+        return Product.objects.none()
     min_price, max_price = _dashboard_price_band(user)
+    return Product.objects.filter(
+        status='ACTIVE',
+        price__gte=min_price,
+        price__lte=max_price,
+    ).order_by('price')
 
-    band_products = list(
-        Product.objects.filter(
-            status='ACTIVE',
-            price__gte=min_price,
-            price__lte=max_price,
-        ).order_by('price')
-    )
 
-    assigned_by_pos = {}
-    for review in ProductReview.objects.filter(
-        user=user, position__isnull=False
-    ).select_related('product').order_by('position'):
-        if review.product and review.product.status == 'ACTIVE':
-            assigned_by_pos[review.position] = review.product
+def _reopen_review_for_repeat(review):
+    """Set completed review back to PENDING for a replay."""
+    review.status = 'PENDING'
+    review.completed_at = None
+    review.commission_earned = Decimal('0.00')
+    review.agreed_price = None
+    review.use_frozen_commission = False
+    review.save(update_fields=[
+        'status',
+        'completed_at',
+        'commission_earned',
+        'agreed_price',
+        'use_frozen_commission',
+    ])
 
-    assigned_ids = {p.id for p in assigned_by_pos.values()}
-    band_queue = [p for p in band_products if p.id not in assigned_ids]
 
-    slot_count = min_orders
-    if assigned_by_pos:
-        slot_count = max(slot_count, max(assigned_by_pos.keys()))
+def _parse_dashboard_position(params):
+    raw = params.get('position')
+    if raw is None or str(raw).strip() == '':
+        return None
+    try:
+        pos = int(raw)
+        return pos if pos >= 1 else None
+    except (TypeError, ValueError):
+        return None
 
-    combined = []
-    band_idx = 0
-    for pos in range(1, slot_count + 1):
-        if pos in assigned_by_pos:
-            combined.append((pos, assigned_by_pos[pos]))
-        elif band_idx < len(band_queue):
-            combined.append((pos, band_queue[band_idx]))
-            band_idx += 1
 
-    product_positions = {p.id: pos for pos, p in combined}
-    all_products_ordered = [p for _, p in combined]
-    product_ids = [p.id for p in all_products_ordered]
-
-    completed_ids = set(
+def _product_at_user_position(user, position):
+    """Product assigned at ProductReview.position for this user."""
+    review = (
         ProductReview.objects.filter(
             user=user,
-            product_id__in=product_ids,
-            status='COMPLETED',
-        ).values_list('product_id', flat=True)
+            position=position,
+            product__status='ACTIVE',
+        )
+        .select_related('product')
+        .first()
     )
-    completed_in_pool = len(completed_ids)
-    next_to_do = [p for p in all_products_ordered if p.id not in completed_ids]
+    if not review or not review.product:
+        return None, None
+    return review.product, review
 
-    return (
-        all_products_ordered,
-        next_to_do,
-        band_products,
-        min_orders,
-        completed_in_pool,
-        product_positions,
+
+def _select_next_band_product(user):
+    """Next in-band product, or repeat oldest completed in band. Returns (product, total, repeating)."""
+    band_qs = _products_in_price_band(user)
+    completed_ids = ProductReview.objects.filter(
+        user=user,
+        status='COMPLETED',
+    ).values_list('product_id', flat=True)
+
+    pending_qs = band_qs.exclude(id__in=completed_ids)
+    total_pending = pending_qs.count()
+    product = pending_qs.first()
+    if product:
+        return product, total_pending, False
+
+    repeat_review = (
+        ProductReview.objects.filter(
+            user=user,
+            status='COMPLETED',
+            product_id__in=band_qs.values('id'),
+            product__status='ACTIVE',
+        )
+        .select_related('product')
+        .order_by('completed_at', 'product__price')
+        .first()
     )
+    if not repeat_review or not repeat_review.product:
+        return None, 0, False
+
+    total_repeat = ProductReview.objects.filter(
+        user=user,
+        status='COMPLETED',
+        product_id__in=band_qs.values('id'),
+    ).count()
+    return repeat_review.product, total_repeat, True
+
+
+def _ensure_band_review(user, product, repeating):
+    review, _ = ProductReview.objects.get_or_create(
+        user=user,
+        product=product,
+        defaults={'status': 'PENDING'},
+    )
+    if repeating:
+        _reopen_review_for_repeat(review)
+    return review
 
 
 @api_view(['GET'])
 @permission_classes([IsNormalUser])
 def product_dashboard(request):
-    """Dashboard: summary stats only (balance, commission, entitlements, completed, level, etc.). Use /dashboard-products/ for products.
-    'completed' uses completed_products_count so re-inserting an item does not decrease the count; next item appears at inserted position."""
+    """Dashboard summary (balance, commission, completed count)."""
     user = request.user
     today = timezone.now().date()
     today_start = timezone.make_aware(datetime.combine(today, datetime.min.time()))
@@ -389,7 +425,7 @@ def product_dashboard(request):
     ).aggregate(total=Sum('commission_earned'))['total'] or 0.00
     today_commission = float(today_commission)
 
-    all_products_ordered, next_to_do, pool_products, entitlements_count, completed_in_pool, _ = _get_dashboard_pool(user)
+    entitlements_count = int(user.level.min_orders or 0) if user.level else 0
     completed_count = getattr(user, 'completed_products_count', 0) or 0
 
     commission_rate = 0.00
@@ -414,78 +450,67 @@ def product_dashboard(request):
     }, status=status.HTTP_200_OK)
 
 
-@api_view(['GET'])
+@api_view(['GET', 'POST'])
 @permission_classes([IsNormalUser])
 def product_dashboard_products(request):
-    """Next dashboard product(s): price band vs balance, inserts at fixed slot numbers.
-
-    Query: limit (default 50, max 50).
-    offset: 0-based index into pending queue (default 0 = next to do).
-    position: optional slot number; if that slot is already done, returns the next pending product instead.
-    """
+    """Generate one product. ?position=N uses insert at N, else band; empty slot falls back to band/repeat."""
     user = request.user
-    try:
-        limit = max(1, min(int(request.query_params.get('limit', 50)), 50))
-    except (TypeError, ValueError):
-        limit = 50
-    try:
-        offset = max(0, int(request.query_params.get('offset', 0)))
-    except (TypeError, ValueError):
-        offset = 0
+    params = request.query_params
+    position = _parse_dashboard_position(params)
 
-    position = None
-    position_raw = request.query_params.get('position')
-    if position_raw is not None and str(position_raw).strip() != '':
-        try:
-            position = int(position_raw)
-        except (TypeError, ValueError):
-            position = None
+    if not user.level:
+        return Response({
+            'products': [],
+            'position': position,
+            'repeated': False,
+            'message': 'No level assigned.',
+        }, status=status.HTTP_200_OK)
 
-    all_products_ordered, next_to_do, _, _, _, product_positions = _get_dashboard_pool(user)
+    min_price, max_price = _dashboard_price_band(user)
+    product = None
+    repeating = False
+    pool_total = 0
+    source = 'band'
+    message = None
 
-    if not next_to_do:
-        slot_slice = []
-        actual_offset = 0
-    elif position is not None and position >= 1:
-        idx = next(
-            (i for i, p in enumerate(next_to_do) if product_positions.get(p.id) == position),
-            None,
-        )
-        resolved_offset = idx if idx is not None else 0
-        slot_slice = next_to_do[resolved_offset:resolved_offset + limit]
-        actual_offset = product_positions.get(slot_slice[0].id, 1) - 1 if slot_slice else 0
-    else:
-        resolved_offset = min(offset, len(next_to_do) - 1) if limit == 1 else offset
-        slot_slice = next_to_do[resolved_offset:resolved_offset + limit]
-        actual_offset = (
-            product_positions.get(slot_slice[0].id, 1) - 1 if limit == 1 and slot_slice else resolved_offset
-        )
+    if position is not None:
+        product, review = _product_at_user_position(user, position)
+        if product:
+            source = 'position'
+            repeating = review.status == 'COMPLETED'
+            if repeating:
+                _reopen_review_for_repeat(review)
 
-    for slot_product in slot_slice:
-        if slot_product is None:
-            continue
-        ProductReview.objects.get_or_create(
-            user=user,
-            product=slot_product,
-            defaults={'status': 'PENDING'}
-        )
-
-    products_data = []
-    for slot_product in slot_slice:
-        if slot_product is None:
-            products_data.append(None)
+    if product is None:
+        product, pool_total, repeating = _select_next_band_product(user)
+        source = 'repeat' if repeating else 'band'
+        if product:
+            _ensure_band_review(user, product, repeating)
+        elif _products_in_price_band(user).count() == 0:
+            message = 'No products in your price range.'
         else:
-            products_data.append(
-                ProductDashboardSerializer(
-                    slot_product,
-                    context={'request': request, 'user': user, 'product_positions': product_positions}
-                ).data
-            )
+            message = 'Nothing to generate.'
+
+    products = [product] if product else []
+    products_data = ProductDashboardSerializer(
+        products,
+        many=True,
+        context={'request': request, 'user': user},
+    ).data
+
+    if products_data:
+        response_position = products_data[0].get('position')
+    else:
+        response_position = position
 
     return Response({
         'products': products_data,
-        'offset': actual_offset,
-        'total_slots': len(all_products_ordered),
+        'position': response_position,
+        'total': pool_total if source in ('band', 'repeat') else (1 if product else 0),
+        'repeated': repeating,
+        'min_price': str(min_price),
+        'max_price': str(max_price),
+        'message': message,
     }, status=status.HTTP_200_OK)
 
 

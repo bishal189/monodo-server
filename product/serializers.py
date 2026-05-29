@@ -145,17 +145,13 @@ class ProductSerializer(serializers.ModelSerializer):
 
 
 class ProductDashboardSerializer(ProductSerializer):
-    """Minimal product for dashboard-products API. Includes position so FE can show 'Step X of Y'."""
-
-    def get_position(self, obj):
-        """Use position from dashboard pool (same order as API list) so FE shows correct step."""
-        positions = self.context.get('product_positions') or {}
-        if obj.id in positions:
-            return positions[obj.id]
-        return super().get_position(obj)
+    """Product payload for dashboard generate."""
 
     class Meta(ProductSerializer.Meta):
-        fields = ['id', 'title', 'description', 'image_url', 'price', 'effective_price', 'commission_amount', 'commission_rate', 'status', 'position']
+        fields = [
+            'id', 'title', 'description', 'image_url', 'price', 'effective_price',
+            'commission_amount', 'commission_rate', 'status', 'review_status', 'position',
+        ]
 
 
 class ProductCreateSerializer(ProductSerializer):
