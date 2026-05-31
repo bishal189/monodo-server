@@ -1610,17 +1610,17 @@ def _parse_assignment_position_from_request(data):
     return position, None
 
 
-def _get_oldest_continuous_assignment(user):
+def _get_first_created_pending_insert(user):
     """
-    Earliest continuous-order assignment (by review created_at).
+    Pending insert to swap on replace-next: earliest by created_at (only one slot).
+    Matches order-overview assigned_products (PENDING + position set).
     Returns (position, review) or (None, None).
     """
-    continuous_start = _continuous_start_position(user)
     review = (
         ProductReview.objects.filter(
             user=user,
+            status='PENDING',
             position__isnull=False,
-            position__gte=continuous_start,
         )
         .select_related('product')
         .order_by('created_at')
@@ -1736,7 +1736,7 @@ def admin_add_product_to_continuous_order(request, user_id, product_id):
 @api_view(['POST'])
 @permission_classes([IsAdminOrAgent])
 def admin_replace_next_order(request, user_id, product_id):
-    """Replace earliest continuous-order slot with this product; first slot if none assigned."""
+    """Swap catalog product into the first-created pending insert (by created_at)."""
     try:
         target_user = User.objects.get(id=user_id, role='USER')
     except User.DoesNotExist:
@@ -1753,12 +1753,17 @@ def admin_replace_next_order(request, user_id, product_id):
     if not target_user.level:
         return Response({'error': 'User has no level assigned'}, status=status.HTTP_400_BAD_REQUEST)
 
-    position_to_use, _ = _get_oldest_continuous_assignment(target_user)
+    position_to_use, replaced_review = _get_first_created_pending_insert(target_user)
     if position_to_use is None:
-        position_to_use = _continuous_start_position(target_user)
+        return Response(
+            {'error': 'No pending insert to replace. Add a product to the journey first.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     _assign_product_at_continuous_position(target_user, product, position_to_use)
 
     return Response({
         'message': 'Item has been replaced.',
+        'position': position_to_use,
+        'replaced_product_id': replaced_review.product_id if replaced_review else None,
     }, status=status.HTTP_200_OK)
