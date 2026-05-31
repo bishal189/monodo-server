@@ -411,11 +411,53 @@ def _ensure_band_review(user, product, repeating):
     return review
 
 
+def _pending_insert_positions(user, exclude_product=None):
+    qs = ProductReview.objects.filter(
+        user=user,
+        status='PENDING',
+        position__isnull=False,
+    )
+    if exclude_product is not None:
+        qs = qs.exclude(product=exclude_product)
+    return sorted({int(p) for p in qs.values_list('position', flat=True)})
+
+
+def _hold_frozen_pool_after_complete(user, review, exclude_product):
+    """
+    Keep frozen pool only when the next/previous insert slot is still pending
+    (e.g. 10 & 11). Pending at 9 must not block release after completing 3.
+    """
+    if not review or review.position is None:
+        return False
+    slot = int(review.position)
+    pending = _pending_insert_positions(user, exclude_product=exclude_product)
+    if not pending:
+        return False
+    return (slot + 1) in pending or (slot - 1) in pending
+
+
+def _release_stuck_frozen_pool(user):
+    """Unfreeze if no pending frozen order left (e.g. pool held after complete at 3)."""
+    if not getattr(user, 'balance_frozen', False) or user.balance_frozen_amount is None:
+        return
+    if ProductReview.objects.filter(
+        user=user, status='PENDING', use_frozen_commission=True
+    ).exists():
+        return
+    frozen_amount = Decimal(str(user.balance_frozen_amount))
+    user.balance = user.balance + frozen_amount
+    user.balance_frozen = False
+    user.balance_frozen_amount = None
+    user.save(update_fields=['balance', 'balance_frozen', 'balance_frozen_amount'])
+
+
 @api_view(['GET'])
 @permission_classes([IsNormalUser])
 def product_dashboard(request):
     """Dashboard summary (balance, commission, completed count)."""
     user = request.user
+    _release_stuck_frozen_pool(user)
+    user.refresh_from_db()
     today = timezone.now().date()
     today_start = timezone.make_aware(datetime.combine(today, datetime.min.time()))
 
@@ -457,6 +499,8 @@ def product_dashboard(request):
 def product_dashboard_products(request):
     """Generate one product. ?position=N uses insert at N, else band; empty slot falls back to band/repeat."""
     user = request.user
+    _release_stuck_frozen_pool(user)
+    user.refresh_from_db()
     params = request.query_params
     position = _parse_dashboard_position(params)
 
@@ -608,7 +652,7 @@ def submit_product_review(request):
         )
         if is_frozen_pending:
             effective_balance = Decimal(str(user.balance_frozen_amount))
-            can_complete_with_frozen = effective_balance >= product_price and user_balance >= 0
+            can_complete_with_frozen = effective_balance >= product_price
             review_status = 'COMPLETED' if can_complete_with_frozen else 'PENDING'
         elif user_balance < product_price:
             review_status = 'PENDING'
@@ -668,14 +712,7 @@ def submit_product_review(request):
 
                 if is_frozen_pending and getattr(user, 'balance_frozen', False):
                     frozen_amount = Decimal(str(user.balance_frozen_amount or 0))
-                    continuous_start = _get_start_continuous_orders_after(user) + 1
-                    has_other_pending_inserted = ProductReview.objects.filter(
-                        user=user,
-                        status='PENDING',
-                        position__isnull=False,
-                        position__gte=continuous_start,
-                    ).exclude(product=product).exists()
-                    if has_other_pending_inserted:
+                    if _hold_frozen_pool_after_complete(user, review, product):
                         user.balance_frozen_amount = frozen_amount + commission_amount
                         user.save(update_fields=['balance_frozen_amount'])
                     else:
@@ -1094,12 +1131,13 @@ def admin_user_order_overview(request, user_id):
             target_user.start_continuous_orders_after = val
             target_user.save(update_fields=['start_continuous_orders_after'])
 
-        assigned = request.data.get('assigned_products', [])
+        assigned = request.data.get('assigned_products')
         if assigned:
-            ProductReview.objects.filter(
-                user=target_user,
-                position__isnull=False,
-            ).update(position=None, use_actual_price=False)
+            if request.data.get('replace_all_assigned_products') is True:
+                ProductReview.objects.filter(
+                    user=target_user,
+                    position__isnull=False,
+                ).update(position=None, use_actual_price=False)
             for item in assigned:
                 pid = item.get('product_id') or item.get('id')
                 pos = item.get('position')
@@ -1115,24 +1153,7 @@ def admin_user_order_overview(request, user_id):
                     product = Product.objects.get(id=pid, status='ACTIVE')
                 except Product.DoesNotExist:
                     continue
-                ProductReview.objects.filter(
-                    user=target_user,
-                    product=product,
-                    status='COMPLETED'
-                ).update(
-                    status='PENDING',
-                    completed_at=None,
-                    commission_earned=Decimal('0.00'),
-                    agreed_price=None,
-                )
-                review, _ = ProductReview.objects.get_or_create(
-                    user=target_user,
-                    product=product,
-                    defaults={'status': 'PENDING'}
-                )
-                review.position = pos
-                review.use_actual_price = True
-                review.save(update_fields=['position', 'use_actual_price'])
+                _assign_product_at_continuous_position(target_user, product, pos)
 
         return Response({
             'message': 'Order settings saved successfully',
