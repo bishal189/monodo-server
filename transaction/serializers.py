@@ -329,7 +329,14 @@ class WithdrawalAccountWalletModalSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = WithdrawalAccount
-        fields = ['wallet_name', 'wallet_address', 'phone_number', 'currency', 'network_type']
+        fields = [
+            'account_holder_name',
+            'wallet_name',
+            'wallet_address',
+            'phone_number',
+            'currency',
+            'network_type',
+        ]
 
     def get_currency(self, obj):
         raw = (obj.crypto_network or '').upper()
@@ -341,6 +348,7 @@ class WithdrawalAccountWalletModalSerializer(serializers.ModelSerializer):
 
 
 class WithdrawalAccountWalletModalUpdateSerializer(serializers.Serializer):
+    account_holder_name = serializers.CharField(required=False, allow_blank=False)
     wallet_name = serializers.CharField(required=False, allow_blank=False)
     wallet_address = serializers.CharField(required=False, allow_blank=False)
     phone_number = serializers.CharField(required=False, allow_blank=True)
@@ -351,6 +359,11 @@ class WithdrawalAccountWalletModalUpdateSerializer(serializers.Serializer):
     network_type = serializers.CharField(required=False)
 
     _valid_networks = [c[0] for c in WithdrawalAccount.CRYPTO_NETWORK_CHOICES]
+
+    def validate_account_holder_name(self, value):
+        if value and not value.strip():
+            raise serializers.ValidationError('Account holder name cannot be empty.')
+        return value.strip() if value else value
 
     def validate_network_type(self, value):
         if not value:
@@ -368,6 +381,8 @@ class WithdrawalAccountWalletModalUpdateSerializer(serializers.Serializer):
         )
 
     def update(self, instance, validated_data):
+        if 'account_holder_name' in validated_data:
+            instance.account_holder_name = validated_data['account_holder_name']
         if 'wallet_name' in validated_data:
             instance.crypto_wallet_name = validated_data['wallet_name'].strip()
         if 'wallet_address' in validated_data:
